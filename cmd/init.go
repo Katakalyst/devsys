@@ -351,6 +351,7 @@ func createProjectContainer(containerName, projectName, projectPath, imageTag st
 		"--env", "CLAUDE_CONFIG_DIR=/root/.claude",
 		"--env", "CODEX_HOME=/root/.codex",
 		"--env", "TRIVY_CACHE_DIR=/root/.cache/trivy",
+		"--env", "IS_SANDBOX=1",
 		imageTag,
 		"sleep", "infinity",
 	)
