@@ -352,6 +352,7 @@ func createProjectContainer(containerName, projectName, projectPath, imageTag st
 		"--env", "CODEX_HOME=/root/.codex",
 		"--env", "TRIVY_CACHE_DIR=/root/.cache/trivy",
 		imageTag,
+		"sleep", "infinity",
 	)
 	return err
 }
