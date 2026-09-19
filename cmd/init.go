@@ -339,18 +339,6 @@ func createProjectContainer(containerName, projectName, projectPath, imageTag st
 		}
 	}
 
-	// Seed skills into the claude-auth volume. The volume is mounted at /root/.claude
-	// inside the project container, which hides the image layer at that path. We copy
-	// the commands out of the image into the volume so Claude Code can find them.
-	if _, err := podman.RunPodman(
-		"run", "--rm",
-		"--volume", "devsys-claude-auth:/dst",
-		imageTag,
-		"sh", "-c", "mkdir -p /dst/commands && cp -a /root/.claude/commands/. /dst/commands/",
-	); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not seed skills into claude auth volume: %v\n", err)
-	}
-
 	_, err := podman.RunPodman(
 		"create",
 		"--name", containerName,
