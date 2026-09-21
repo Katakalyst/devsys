@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/katakalyst/devsys/internal/podman"
@@ -137,7 +139,31 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 9: Remove the binary. On Unix, deleting a running binary is safe —
+	// Step 9: Remove the staleness-check cache directory.
+	if cacheDir, err := os.UserCacheDir(); err == nil {
+		devsysCacheDir := filepath.Join(cacheDir, "devsys")
+		fmt.Printf("Removing cache directory %s ...\n", devsysCacheDir)
+		if err := os.RemoveAll(devsysCacheDir); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: cannot remove cache directory: %v\n", err)
+		}
+	}
+
+	// Step 10: On macOS, remove the PATH export the installer may have added
+	// to shell profile files. Linux doesn't need this — the installer never
+	// modifies profile files there.
+	if runtime.GOOS == "darwin" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			for _, profile := range []string{
+				filepath.Join(home, ".zshrc"),
+				filepath.Join(home, ".profile"),
+			} {
+				removeInstallerPathEntry(profile)
+			}
+		}
+	}
+
+	// Step 11: Remove the binary. On Unix, deleting a running binary is safe —
 	// the process continues from the already-loaded image; the file is simply
 	// unlinked. The user's terminal session continues normally after this exits.
 	fmt.Printf("Removing binary %s ...\n", execPath)
@@ -148,4 +174,32 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("\ndevsys uninstalled.")
 	return nil
+}
+
+// installerPathBlock is the exact text the macOS installer appends to shell
+// profile files. Searching for this literal string is safe because the
+// installer checks for ".local/bin" before appending, so it appears at most once.
+const installerPathBlock = "\n# Added by devsys installer\nexport PATH=\"${HOME}/.local/bin:${PATH}\"\n"
+
+// removeInstallerPathEntry removes the PATH block the installer added to a
+// shell profile file, if present. Permission errors are printed as warnings —
+// a profile file the user has locked down is not a reason to abort uninstall.
+func removeInstallerPathEntry(profilePath string) {
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "  Warning: cannot read %s: %v\n", profilePath, err)
+		}
+		return
+	}
+	updated := strings.Replace(string(data), installerPathBlock, "", 1)
+	if updated == string(data) {
+		return // block not present — nothing to do
+	}
+	if err := os.WriteFile(profilePath, []byte(updated), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: cannot update %s: %v\n", profilePath, err)
+		fmt.Fprintf(os.Stderr, "  Remove manually: the '# Added by devsys installer' block in %s\n", profilePath)
+		return
+	}
+	fmt.Printf("Removed PATH entry from %s\n", profilePath)
 }

@@ -18,7 +18,9 @@
 #      a way to update devsys as "devsys update" itself.
 #   4. Downloads the devsys binary for your platform to ~/.local/bin/devsys,
 #      unless already up to date.
-#   5. Adds ~/.local/bin to PATH in your shell profile if it isn't there yet.
+#   5. On macOS: adds ~/.local/bin to PATH in your shell profile if it isn't
+#      there yet. On Linux this is unnecessary — ~/.local/bin is already in
+#      PATH on any modern systemd-based distro.
 #   6. Pulls the newest devsys-base image directly (no devsys subcommand
 #      involved) — looks up the current tags on GHCR, picks the highest
 #      semver one, and `podman pull`s it. Requires curl specifically (see
@@ -221,6 +223,9 @@ fi
 # --------------------------------------------------------------------------
 # 5. Ensure ~/.local/bin is on PATH
 # --------------------------------------------------------------------------
+# On Linux, ~/.local/bin is already in PATH on any modern systemd-based
+# distro — no profile modification needed. On macOS it isn't added by
+# default, so append it to the shell profile if missing.
 
 # Helper: append the PATH export to a profile file if ~/.local/bin is not
 # already referenced there.
@@ -234,29 +239,45 @@ _add_to_profile() {
     info "Added ~/.local/bin to PATH in ${profile}"
 }
 
-# Check whether the install dir is reachable in the current PATH.
-_on_path=0
-_IFS_OLD="${IFS}"; IFS=:
-for _dir in ${PATH}; do
-    [ "${_dir}" = "${INSTALL_DIR}" ] && _on_path=1 && break
-done
-IFS="${_IFS_OLD}"
-
-if [ "${_on_path}" -eq 0 ]; then
-    printf '\nAdding ~/.local/bin to your shell PATH...\n'
-    _patched=0
-    for _profile in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
-        if [ -f "${_profile}" ]; then
-            _add_to_profile "${_profile}"
-            _patched=1
-        fi
+if [ "${OS_NAME}" = "Darwin" ]; then
+    # Check whether the install dir is reachable in the current PATH.
+    _on_path=0
+    _IFS_OLD="${IFS}"; IFS=:
+    for _dir in ${PATH}; do
+        [ "${_dir}" = "${INSTALL_DIR}" ] && _on_path=1 && break
     done
-    # No profile file found — create .profile so something picks it up.
-    if [ "${_patched}" -eq 0 ]; then
-        _add_to_profile "${HOME}/.profile"
+    IFS="${_IFS_OLD}"
+
+    if [ "${_on_path}" -eq 0 ]; then
+        printf '\nAdding ~/.local/bin to your shell PATH...\n'
+        _patched=0
+        for _profile in "${HOME}/.zshrc" "${HOME}/.profile"; do
+            if [ -f "${_profile}" ]; then
+                _add_to_profile "${_profile}"
+                _patched=1
+            fi
+        done
+        # No profile file found — create .profile so something picks it up.
+        if [ "${_patched}" -eq 0 ]; then
+            _add_to_profile "${HOME}/.profile"
+        fi
+        printf '\n  Reload your shell or run:\n'
+        printf '    export PATH="${HOME}/.local/bin:${PATH}"\n'
     fi
-    printf '\n  Reload your shell or run:\n'
-    printf '    export PATH="${HOME}/.local/bin:${PATH}"\n'
+else
+    # Linux: ~/.local/bin is on PATH by default. Print a note if it somehow
+    # isn't so the user knows what to do, but don't touch their profile files.
+    _on_path=0
+    _IFS_OLD="${IFS}"; IFS=:
+    for _dir in ${PATH}; do
+        [ "${_dir}" = "${INSTALL_DIR}" ] && _on_path=1 && break
+    done
+    IFS="${_IFS_OLD}"
+
+    if [ "${_on_path}" -eq 0 ]; then
+        printf '\nNote: ~/.local/bin is not in your PATH.\n'
+        info "Add it yourself if needed: export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+    fi
 fi
 
 # --------------------------------------------------------------------------
