@@ -163,16 +163,15 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 11: Remove the binary. On Unix, deleting a running binary is safe —
-	// the process continues from the already-loaded image; the file is simply
-	// unlinked. The user's terminal session continues normally after this exits.
+	// Step 11: Remove the binary.
+	// On Unix: safe to delete a running binary — the process continues from
+	// the already-loaded image; the file is simply unlinked.
+	// On Windows: cannot delete a running .exe, so a deferred cmd.exe command
+	// is spawned instead (see uninstall_windows.go). removeBinary calls
+	// os.Exit on Windows, so the message must be printed before the call.
 	fmt.Printf("Removing binary %s ...\n", execPath)
-	if err := os.Remove(execPath); err != nil {
-		fmt.Fprintf(os.Stderr, "  Warning: cannot remove binary: %v\n", err)
-		fmt.Fprintf(os.Stderr, "  Remove it manually: rm %s\n", execPath)
-	}
-
 	fmt.Println("\ndevsys uninstalled.")
+	removeBinary(execPath)
 	return nil
 }
 
