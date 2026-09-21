@@ -38,6 +38,17 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot list containers: %w", err)
 	}
+
+	// Capture project paths now, while containers still exist — needed for
+	// GitLab token revocation (step 7.5), which runs after containers are
+	// already removed.
+	projectPaths := make(map[string]string)
+	for _, c := range containers {
+		name := containerField(c, "Names")
+		if path, err := getProjectPath(name); err == nil {
+			projectPaths[containerToProject(name)] = path
+		}
+	}
 	images, err := podman.ListDevsysImages()
 	if err != nil {
 		return fmt.Errorf("cannot list images: %w", err)
@@ -126,6 +137,19 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 		name := containerField(v, "Name")
 		fmt.Printf("Removing volume %s ...\n", name)
 		if _, err := podman.RunPodman("volume", "rm", name); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: %v\n", err)
+		}
+	}
+
+	// Step 7.5: Revoke GitLab project access tokens via the API before the
+	// secrets are removed in step 8. The bootstrap PAT is still available here.
+	// Failures are non-fatal warnings — a network issue or missing PAT should
+	// not prevent the rest of uninstall from completing.
+	for _, c := range containers {
+		name := containerField(c, "Names")
+		projectName := containerToProject(name)
+		fmt.Printf("Revoking GitLab token for %s ...\n", projectName)
+		if err := revokeGitLabToken(projectName, projectPaths[projectName]); err != nil {
 			fmt.Fprintf(os.Stderr, "  Warning: %v\n", err)
 		}
 	}
