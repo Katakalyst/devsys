@@ -16,10 +16,14 @@ On native Windows (PowerShell):
 irm https://github.com/katakalyst/devsys/releases/latest/download/install.ps1 | iex
 ```
 
-Then:
+The installer checks Podman and pulls the newest `devsys-base` image for
+you, non-interactively. Then set up credentials, and you're ready:
 
 ```sh
-devsys setup
+devsys auth gitlab    # bootstrap GitLab PAT devsys uses to create projects
+devsys auth claude    # seed or log in the shared Claude credential
+devsys auth codex     # seed or log in the shared Codex credential
+
 devsys init <path>
 devsys enter <project>
 ```

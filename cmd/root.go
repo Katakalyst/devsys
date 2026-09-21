@@ -42,7 +42,7 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.AddCommand(setupCmd)
+	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(rebuildCmd)
 	rootCmd.AddCommand(startCmd)

@@ -40,6 +40,8 @@ func runEnter(cmd *cobra.Command, args []string) error {
 	// (cmd/root.go's PersistentPostRun), not specifically here.
 	checkTokenExpiry(projectName)
 	checkStaleness(projectName)
+	checkAgentAuth("claude")
+	checkAgentAuth("codex")
 
 	// Open Claude interactively.
 	return podman.ExecInteractive(containerName, "claude")
@@ -93,6 +95,26 @@ func warnIfBaseImageOutdated(projectName string) {
 	}
 	fmt.Fprintf(os.Stderr, "Warning: a newer devsys-base is available for '%s' (%s). Run 'devsys update %s' to upgrade.\n",
 		projectName, newest, projectName)
+}
+
+// checkAgentAuth warns, throttled the same way as the staleness/expiry
+// checks above, if the shared Claude or Codex credential volume has never
+// actually been authenticated (Podman auto-creates the volume empty on
+// first container mount, so its mere existence isn't enough signal — see
+// volumeHasContent in cmd/auth.go). Machine-level, not per-project, but
+// checked here since 'devsys enter' is the routine entry point where it's
+// actually useful to notice.
+func checkAgentAuth(agent string) {
+	cacheKey := agent + "-auth"
+	if checkThrottled(cacheKey) {
+		return
+	}
+	volumeName := fmt.Sprintf("devsys-%s-auth", agent)
+	authed := podman.VolumeExists(volumeName) && volumeHasContent(volumeName)
+	if !authed {
+		fmt.Fprintf(os.Stderr, "Warning: no %s auth set. Run 'devsys auth %s', or log in from inside this session.\n", agent, agent)
+	}
+	markChecked(cacheKey)
 }
 
 // checkTokenExpiry warns if the project's GitLab token expires within 30 days.

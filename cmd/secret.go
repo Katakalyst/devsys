@@ -33,7 +33,7 @@ func runSecretRotate(cmd *cobra.Command, args []string) error {
 
 	bootstrapPAT, err := podman.GetSecretValue("devsys-bootstrap-gitlab-token")
 	if err != nil {
-		return fmt.Errorf("cannot read bootstrap PAT (run 'devsys setup' first): %w", err)
+		return fmt.Errorf("cannot read bootstrap PAT (run 'devsys auth gitlab' first): %w", err)
 	}
 
 	// Determine project ID from git remote.

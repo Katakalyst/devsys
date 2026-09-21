@@ -66,7 +66,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// Read bootstrap PAT for GitLab API calls.
 	bootstrapPAT, err := podman.GetSecretValue("devsys-bootstrap-gitlab-token")
 	if err != nil {
-		return fmt.Errorf("cannot read bootstrap GitLab PAT (run 'devsys setup' first): %w", err)
+		return fmt.Errorf("cannot read bootstrap GitLab PAT (run 'devsys auth gitlab' first): %w", err)
 	}
 	glClient := gitlab.NewClient(initGitLabURL, bootstrapPAT)
 

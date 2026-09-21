@@ -39,7 +39,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	// Check 2: Bootstrap PAT secret exists.
 	bootstrapExists := podman.SecretExists("devsys-bootstrap-gitlab-token")
-	check("Bootstrap GitLab PAT secret", bootstrapExists, "run 'devsys setup' to create it")
+	check("Bootstrap GitLab PAT secret", bootstrapExists, "run 'devsys auth gitlab' to set it")
 
 	// Check 3: Bootstrap PAT is readable (valid format check).
 	if bootstrapExists {
@@ -52,7 +52,15 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check 4: devsys-base's registry location is reachable and publishes at
+	// Check 4: Claude/Codex auth volumes actually hold credentials, not just
+	// exist — a volume can exist empty (e.g. auto-created by
+	// createProjectContainer) without ever having been authenticated.
+	claudeAuthed := podman.VolumeExists("devsys-claude-auth") && volumeHasContent("devsys-claude-auth")
+	check("Claude Code auth", claudeAuthed, "run 'devsys auth claude', or log in from inside 'devsys enter'")
+	codexAuthed := podman.VolumeExists("devsys-codex-auth") && volumeHasContent("devsys-codex-auth")
+	check("Codex auth", codexAuthed, "run 'devsys auth codex', or log in from inside 'devsys enter'")
+
+	// Check 5: devsys-base's registry location is reachable and publishes at
 	// least one discoverable version. devsysBaseImage has no tag (Section
 	// 12.3), so this is a live registry reachability check, not a local
 	// image-presence check — a more meaningful signal anyway, since each
