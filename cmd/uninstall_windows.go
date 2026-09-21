@@ -31,15 +31,15 @@ func removeBinary(path string) {
 	os.Exit(0)
 }
 
-// removeInstallerPathEntry removes the ~/.local/bin entry the installer added
-// to the user PATH in the Windows registry (HKCU\Environment).
+// removeInstallerPathEntry removes the %LOCALAPPDATA%\Programs\devsys entry
+// the installer added to the user PATH in the Windows registry (HKCU\Environment).
 func removeInstallerPathEntry() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "  Warning: cannot determine home directory: %v\n", err)
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		fmt.Fprintf(os.Stderr, "  Warning: LOCALAPPDATA is not set — cannot locate install directory\n")
 		return
 	}
-	installDir := filepath.Join(home, ".local", "bin")
+	installDir := filepath.Join(localAppData, "Programs", "devsys")
 
 	key, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {

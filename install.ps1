@@ -20,8 +20,8 @@
 #      already on PATH, and prints what it's about to do (install / upgrade /
 #      already up to date).
 #   4. Downloads the devsys binary for your architecture to
-#      $HOME\.local\bin\devsys.exe, unless already up to date.
-#   5. Adds $HOME\.local\bin to the user PATH if it isn't there yet.
+#      %LOCALAPPDATA%\Programs\devsys\devsys.exe, unless already up to date.
+#   5. Adds %LOCALAPPDATA%\Programs\devsys to the user PATH if it isn't there yet.
 #   6. Pulls the newest devsys-base image directly (no devsys subcommand
 #      involved) — looks up the current tags on GHCR, picks the highest
 #      semver one, and `podman pull`s it. Skipped with a message if Podman
@@ -41,7 +41,7 @@ $ErrorActionPreference = "Stop"
 $Repo        = "katakalyst/devsys"
 $BaseRepo    = "katakalyst/devsys-base"
 $GhcrHost    = "ghcr.io"
-$InstallDir  = Join-Path $HOME ".local\bin"
+$InstallDir  = Join-Path $env:LOCALAPPDATA "Programs\devsys"
 $BinaryName  = "devsys.exe"
 $InstallPath = Join-Path $InstallDir $BinaryName
 
