@@ -209,6 +209,48 @@ func ListDevsysContainers() ([]map[string]interface{}, error) {
 	return containers, nil
 }
 
+// ListDevsysSecrets returns the names of all secrets labelled devsys=true.
+func ListDevsysSecrets() ([]string, error) {
+	out, err := RunPodman("secret", "ls", "--filter", "label=devsys=true", "--format", "{{.Name}}")
+	if err != nil {
+		return nil, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
+}
+
+// ListDevsysImages returns the names of all locally stored images that are
+// devsys project images or the devsys-base image, identified by having
+// "devsys-" in the image reference.
+func ListDevsysImages() ([]string, error) {
+	out, err := RunPodman("image", "ls", "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" || out == "null" {
+		return nil, nil
+	}
+	var images []map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &images); err != nil {
+		return nil, fmt.Errorf("cannot parse image list: %w", err)
+	}
+	var names []string
+	for _, img := range images {
+		namesRaw, _ := img["Names"].([]interface{})
+		for _, n := range namesRaw {
+			name, _ := n.(string)
+			if strings.Contains(name, "devsys-") {
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	return names, nil
+}
+
 // ListDevsysVolumes returns all volumes labelled devsys=true.
 func ListDevsysVolumes() ([]map[string]interface{}, error) {
 	out, err := RunPodman("volume", "ls", "--filter", "label=devsys=true", "--format", "json")
