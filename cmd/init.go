@@ -312,7 +312,7 @@ func remoteNameFromURL(remoteURL string) string {
 }
 
 func buildImage(tag, containerfile, contextPath string) error {
-	_, err := podman.RunPodman("build", "-t", tag, "-f", containerfile, contextPath)
+	_, err := podman.RunPodman("build", "-t", tag, "--label", "devsys=true", "-f", containerfile, contextPath)
 	return err
 }
 

@@ -18,14 +18,34 @@ import (
 // Directly removing a running .exe on Windows fails — the OS locks it.
 // After spawning the command this function calls os.Exit(0); the caller
 // must print any final output before calling it.
+//
+// If the binary lives in the expected install directory
+// (%LOCALAPPDATA%\Programs\devsys), the directory itself is also removed
+// after the binary is deleted.
 func removeBinary(path string) {
+	dir := filepath.Dir(path)
+	localAppData := os.Getenv("LOCALAPPDATA")
+	installDir := ""
+	if localAppData != "" {
+		installDir = filepath.Join(localAppData, "Programs", "devsys")
+	}
+
+	// Only remove the install directory when the binary is actually in the
+	// expected location — never rmdir an arbitrary directory.
+	var shellCmd string
+	if installDir != "" && strings.EqualFold(dir, installDir) {
+		shellCmd = fmt.Sprintf(`ping -n 2 127.0.0.1 >nul & del /f /q "%s" & rmdir /s /q "%s"`, path, dir)
+	} else {
+		shellCmd = fmt.Sprintf(`ping -n 2 127.0.0.1 >nul & del /f /q "%s"`, path)
+	}
+
 	// "ping -n 2" waits ~1 second — enough for this process to fully exit
-	// before "del" runs. HideWindow prevents a console window from flashing.
-	cmd := exec.Command("cmd", "/c", fmt.Sprintf(`ping -n 2 127.0.0.1 >nul & del /f /q "%s"`, path))
+	// before del/rmdir run. HideWindow prevents a console window from flashing.
+	cmd := exec.Command("cmd", "/c", shellCmd)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: cannot schedule binary removal: %v\n", err)
-		fmt.Fprintf(os.Stderr, "  Remove it manually: del %q\n", path)
+		fmt.Fprintf(os.Stderr, "  Remove it manually: rmdir /s /q %q\n", dir)
 		return
 	}
 	os.Exit(0)
