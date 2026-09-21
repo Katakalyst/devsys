@@ -34,7 +34,7 @@ func isReadOnly(args []string) bool {
 		return true
 	}
 	switch args[0] {
-	case "--version", "version", "info", "inspect", "ps":
+	case "--version", "version", "info", "inspect", "ps", "top":
 		return true
 	case "secret", "volume", "image", "container":
 		if len(args) >= 2 {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/katakalyst/devsys/internal/podman"
@@ -13,7 +14,7 @@ import (
 
 var enterCmd = &cobra.Command{
 	Use:   "enter <project>",
-	Short: "Open Claude inside a project container",
+	Short: "Open a shell inside a project container",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runEnter,
 }
@@ -28,7 +29,6 @@ func runEnter(cmd *cobra.Command, args []string) error {
 
 	// Ensure container is running.
 	if !podman.ContainerIsRunning(containerName) {
-		fmt.Printf("Starting %s ...\n", containerName)
 		if _, err := podman.RunPodman("start", containerName); err != nil {
 			return fmt.Errorf("cannot start container: %w", err)
 		}
@@ -43,8 +43,37 @@ func runEnter(cmd *cobra.Command, args []string) error {
 	checkAgentAuth("claude")
 	checkAgentAuth("codex")
 
-	// Open Claude interactively.
-	return podman.ExecInteractive(containerName, "claude")
+	// Open a bash shell interactively.
+	shellErr := podman.ExecInteractive(containerName, "bash")
+
+	// After the shell exits, stop the container if no bash sessions remain.
+	// This keeps the container running only while someone is inside it.
+	// (The container's watchdog process handles the crash/kill-9 case
+	// independently; this is the normal-exit path.)
+	if podman.ContainerIsRunning(containerName) && activeBashSessions(containerName) == 0 {
+		if _, err := podman.RunPodman("stop", containerName); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot stop container: %v\n", err)
+		}
+	}
+	return shellErr
+}
+
+// activeBashSessions returns the number of bash processes currently running
+// inside the container. Returns 0 on any error (treated as no sessions).
+func activeBashSessions(containerName string) int {
+	out, err := podman.RunPodman("top", containerName, "comm")
+	if err != nil {
+		return 0
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	// First line is the "COMMAND" header — skip it.
+	count := 0
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) == "bash" {
+			count++
+		}
+	}
+	return count
 }
 
 // checkStaleness prints a non-blocking warning if this project's base image

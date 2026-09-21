@@ -8,56 +8,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var rebuildAll bool
-
 var rebuildCmd = &cobra.Command{
 	Use:   "rebuild <project>",
 	Short: "Rebuild the image and recreate the container for a project",
-	Long: `Rebuilds the project image from .devsys/Containerfile then removes and
-recreates the persistent container with the same flags. Use --all to rebuild
-every devsys-managed project.`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runRebuild,
-}
-
-func init() {
-	rebuildCmd.Flags().BoolVar(&rebuildAll, "all", false, "Rebuild all devsys projects")
+	Long:  `Rebuilds the project image from .devsys/Containerfile then removes and recreates the persistent container with the same flags.`,
+	Args:  cobra.ExactArgs(1),
+	RunE:  runRebuild,
 }
 
 func runRebuild(cmd *cobra.Command, args []string) error {
-	if rebuildAll {
-		containers, err := podman.ListDevsysContainers()
-		if err != nil {
-			return fmt.Errorf("cannot list devsys containers: %w", err)
-		}
-		if len(containers) == 0 {
-			fmt.Println("No devsys containers found.")
-			return nil
-		}
-		for _, c := range containers {
-			name, _ := c["Names"].(string)
-			if name == "" {
-				if names, ok := c["Names"].([]interface{}); ok && len(names) > 0 {
-					name, _ = names[0].(string)
-				}
-			}
-			projectName := containerToProject(name)
-			fmt.Printf("Rebuilding %s...\n", projectName)
-			if err := rebuildProject(projectName); err != nil {
-				fmt.Printf("  Error rebuilding %s: %v\n", projectName, err)
-			}
-		}
-		return nil
-	}
-
-	if len(args) == 0 {
-		return fmt.Errorf("provide a project name or use --all")
-	}
 	return rebuildProject(args[0])
 }
 
 func rebuildProject(projectName string) error {
 	containerName := fmt.Sprintf("devsys-%s", projectName)
+
+	// Refuse to rebuild while the container is running — there may be active
+	// shell sessions inside, and force-removing a live container would disrupt
+	// them. Exit all shells first; the container stops automatically on last exit.
+	if podman.ContainerIsRunning(containerName) {
+		return fmt.Errorf("container %s is running — exit all shells first (the container stops automatically on last exit)", containerName)
+	}
 
 	// Determine project path from container inspect.
 	projectPath, err := getProjectPath(containerName)
@@ -77,7 +48,7 @@ func rebuildProject(projectName string) error {
 	// Remove existing container.
 	if podman.ContainerExists(containerName) {
 		fmt.Printf("Removing container %s ...\n", containerName)
-		if _, err := podman.RunPodman("rm", "-f", containerName); err != nil {
+		if _, err := podman.RunPodman("rm", containerName); err != nil {
 			return fmt.Errorf("cannot remove container: %w", err)
 		}
 	}

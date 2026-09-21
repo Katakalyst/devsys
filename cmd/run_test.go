@@ -1,7 +1,7 @@
 package cmd
 
-// Tests for runStart, runStop, runEnter, runShell, and rebuildProject using
-// the fake podman subprocess infrastructure (internal/podmanfake).
+// Tests for runEnter and rebuildProject using the fake podman subprocess
+// infrastructure (internal/podmanfake).
 //
 // All tests run against the real function logic without a real container
 // runtime. The fake podman subprocess records every podman invocation in a
@@ -45,137 +45,23 @@ func injectStdin(t *testing.T, input string) {
 }
 
 // ---------------------------------------------------------------------------
-// runStart
-// ---------------------------------------------------------------------------
-
-func TestRunStart_ContainerStopped_StartsIt(t *testing.T) {
-	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: false,
-	})
-
-	err := runStart(nil, []string{"testproject"})
-	if err != nil {
-		t.Fatalf("runStart: %v", err)
-	}
-	if !rec.HasCall("start", "devsys-testproject") {
-		t.Error("expected podman start devsys-testproject")
-	}
-}
-
-func TestRunStart_ContainerAlreadyRunning_NoOp(t *testing.T) {
-	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: true,
-	})
-
-	err := runStart(nil, []string{"testproject"})
-	if err != nil {
-		t.Fatalf("runStart: %v", err)
-	}
-	if rec.HasCall("start") {
-		t.Error("expected no podman start when container is already running")
-	}
-}
-
-func TestRunStart_NoContainer_ReturnsError(t *testing.T) {
-	podmanfake.Install(t, podmanfake.Options{
-		ContainerExists: false,
-	})
-
-	err := runStart(nil, []string{"testproject"})
-	if err == nil {
-		t.Fatal("expected error when container does not exist")
-	}
-}
-
-func TestRunStart_StartFails_ReturnsError(t *testing.T) {
-	podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: false,
-		StartFails:       true,
-	})
-
-	err := runStart(nil, []string{"testproject"})
-	if err == nil {
-		t.Fatal("expected error when podman start fails")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// runStop
-// ---------------------------------------------------------------------------
-
-func TestRunStop_ContainerRunning_StopsIt(t *testing.T) {
-	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: true,
-	})
-
-	err := runStop(nil, []string{"testproject"})
-	if err != nil {
-		t.Fatalf("runStop: %v", err)
-	}
-	if !rec.HasCall("stop", "devsys-testproject") {
-		t.Error("expected podman stop devsys-testproject")
-	}
-}
-
-func TestRunStop_ContainerAlreadyStopped_NoOp(t *testing.T) {
-	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: false,
-	})
-
-	err := runStop(nil, []string{"testproject"})
-	if err != nil {
-		t.Fatalf("runStop: %v", err)
-	}
-	if rec.HasCall("stop") {
-		t.Error("expected no podman stop when container is already stopped")
-	}
-}
-
-func TestRunStop_NoContainer_ReturnsError(t *testing.T) {
-	podmanfake.Install(t, podmanfake.Options{
-		ContainerExists: false,
-	})
-
-	err := runStop(nil, []string{"testproject"})
-	if err == nil {
-		t.Fatal("expected error when container does not exist")
-	}
-}
-
-func TestRunStop_StopFails_ReturnsError(t *testing.T) {
-	podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: true,
-		StopFails:        true,
-	})
-
-	err := runStop(nil, []string{"testproject"})
-	if err == nil {
-		t.Fatal("expected error when podman stop fails")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // runEnter
 // ---------------------------------------------------------------------------
 
 // skipStalenessChecks redirects the cache dir to a temp one and pre-marks
-// both checkStaleness markers as already checked, so tests exercising
-// runEnter for reasons unrelated to the staleness-warning feature itself
-// don't make real network calls or touch the real user cache dir.
+// the throttle keys for staleness and auth checks, so tests exercising
+// runEnter for reasons unrelated to those features don't make real network
+// calls or touch the real user cache dir.
 func skipStalenessChecks(t *testing.T, projectName string) {
 	t.Helper()
 	redirectCacheDir(t)
 	markChecked("cli-version")
 	markChecked("base-image-" + projectName)
+	markChecked("claude-auth")
+	markChecked("codex-auth")
 }
 
-func TestRunEnter_ContainerRunning_OpensClaudeSession(t *testing.T) {
+func TestRunEnter_ContainerRunning_OpensBashSession(t *testing.T) {
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists:  true,
 		ContainerRunning: true,
@@ -187,8 +73,12 @@ func TestRunEnter_ContainerRunning_OpensClaudeSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runEnter: %v", err)
 	}
-	if !rec.HasCall("exec", "devsys-testproject", "claude") {
-		t.Error("expected podman exec ... claude")
+	if !rec.HasCall("exec", "devsys-testproject", "bash") {
+		t.Error("expected podman exec ... bash")
+	}
+	// Last session exited (ActiveBashSessions=0 default) → container stopped.
+	if !rec.HasCall("stop", "devsys-testproject") {
+		t.Error("expected podman stop after last bash session exited")
 	}
 }
 
@@ -207,8 +97,8 @@ func TestRunEnter_ContainerStopped_StartsBeforeEntering(t *testing.T) {
 	if !rec.HasCall("start", "devsys-testproject") {
 		t.Error("expected podman start before entering")
 	}
-	if !rec.HasCall("exec", "devsys-testproject", "claude") {
-		t.Error("expected podman exec ... claude")
+	if !rec.HasCall("exec", "devsys-testproject", "bash") {
+		t.Error("expected podman exec ... bash")
 	}
 }
 
@@ -229,9 +119,27 @@ func TestRunEnter_TokenExpiringSoon_WarnsAndStillEnters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runEnter: %v", err)
 	}
-	// Claude session was still opened.
-	if !rec.HasCall("exec", "devsys-testproject", "claude") {
-		t.Error("expected podman exec ... claude even when token is expiring")
+	// Bash session was still opened.
+	if !rec.HasCall("exec", "devsys-testproject", "bash") {
+		t.Error("expected podman exec ... bash even when token is expiring")
+	}
+}
+
+func TestRunEnter_OtherSessionsOpen_KeepsContainerRunning(t *testing.T) {
+	// Another bash session is still open when this one exits → no stop.
+	rec := podmanfake.Install(t, podmanfake.Options{
+		ContainerExists:    true,
+		ContainerRunning:   true,
+		ActiveBashSessions: 1,
+	})
+	skipStalenessChecks(t, "testproject")
+
+	err := runEnter(nil, []string{"testproject"})
+	if err != nil {
+		t.Fatalf("runEnter: %v", err)
+	}
+	if rec.HasSubcommand("stop") {
+		t.Errorf("expected no stop while another bash session is open; calls: %v", rec.Calls())
 	}
 }
 
@@ -400,69 +308,6 @@ func TestWarnIfCLIOutdated_ThrottledPattern(t *testing.T) {
 	runCheck()
 	if apiHits != 1 {
 		t.Errorf("expected the second call to be throttled, got %d total hits", apiHits)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// runShell
-// ---------------------------------------------------------------------------
-
-func TestRunShell_BashAvailable_OpensBash(t *testing.T) {
-	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: true,
-		BashExitCode:     0,
-	})
-
-	err := runShell(nil, []string{"testproject"})
-	if err != nil {
-		t.Fatalf("runShell: %v", err)
-	}
-	if !rec.HasCall("exec", "devsys-testproject", "bash") {
-		t.Error("expected podman exec ... bash")
-	}
-}
-
-func TestRunShell_NoContainer_ReturnsError(t *testing.T) {
-	podmanfake.Install(t, podmanfake.Options{
-		ContainerExists: false,
-	})
-
-	err := runShell(nil, []string{"testproject"})
-	if err == nil {
-		t.Fatal("expected error when container does not exist")
-	}
-}
-
-func TestRunShell_StartFails_ReturnsError(t *testing.T) {
-	podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: false,
-		StartFails:       true,
-	})
-
-	err := runShell(nil, []string{"testproject"})
-	if err == nil {
-		t.Fatal("expected error when container fails to start")
-	}
-}
-
-func TestRunShell_BashMissing_FallsBackToSh(t *testing.T) {
-	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: true,
-		BashExitCode:     127, // bash not found in image
-	})
-
-	err := runShell(nil, []string{"testproject"})
-	if err != nil {
-		t.Fatalf("runShell with sh fallback: %v", err)
-	}
-	if !rec.HasCall("exec", "devsys-testproject", "bash") {
-		t.Error("expected podman exec ... bash attempt")
-	}
-	if !rec.HasCall("exec", "devsys-testproject", "sh") {
-		t.Error("expected podman exec ... sh fallback")
 	}
 }
 
@@ -800,42 +645,6 @@ func withDryRun(t *testing.T, v bool) *bytes.Buffer {
 		podman.DryRunOutput = origOutput
 	})
 	return buf
-}
-
-func TestRunStart_DryRun_SkipsRealStart(t *testing.T) {
-	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: false,
-	})
-	buf := withDryRun(t, true)
-
-	if err := runStart(nil, []string{"testproject"}); err != nil {
-		t.Fatalf("runStart: %v", err)
-	}
-	if rec.HasSubcommand("start") {
-		t.Errorf("expected no real podman start call while DryRun is true; calls: %v", rec.Calls())
-	}
-	if out := buf.String(); !strings.Contains(out, "[dry-run]") || !strings.Contains(out, "start") {
-		t.Errorf("expected dry-run output describing the start call, got: %q", out)
-	}
-}
-
-func TestRunStop_DryRun_SkipsRealStop(t *testing.T) {
-	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: true,
-	})
-	buf := withDryRun(t, true)
-
-	if err := runStop(nil, []string{"testproject"}); err != nil {
-		t.Fatalf("runStop: %v", err)
-	}
-	if rec.HasSubcommand("stop") {
-		t.Errorf("expected no real podman stop call while DryRun is true; calls: %v", rec.Calls())
-	}
-	if out := buf.String(); !strings.Contains(out, "[dry-run]") || !strings.Contains(out, "stop") {
-		t.Errorf("expected dry-run output describing the stop call, got: %q", out)
-	}
 }
 
 func TestRebuildProject_DryRun_SkipsBuildRmCreate(t *testing.T) {

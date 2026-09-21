@@ -47,8 +47,12 @@ type Options struct {
 	// (used by getProjectPath). Empty causes getProjectPath to fail.
 	ProjectPath string
 	// BashExitCode is the exit code returned when `podman exec -it <name> bash`
-	// is called. Set to 127 to test the sh fallback path in runShell.
+	// is called.
 	BashExitCode int
+	// ActiveBashSessions is the number of bash lines reported by
+	// `podman top <container> comm`. Defaults to 0 (no active sessions),
+	// which causes runEnter to stop the container after the shell exits.
+	ActiveBashSessions int
 	// ImagePresent makes `podman image inspect` succeed (non-empty ID output).
 	// When false the command exits non-zero, simulating a missing image.
 	ImagePresent bool
@@ -188,6 +192,7 @@ func Install(t *testing.T, opts Options) *Recorder {
 			fmt.Sprintf("FAKE_VOLUME_EXISTS=%v", opts.VolumeExists),
 			"FAKE_PROJECT_PATH="+opts.ProjectPath,
 			fmt.Sprintf("FAKE_BASH_EXIT=%d", opts.BashExitCode),
+			fmt.Sprintf("FAKE_ACTIVE_BASH_SESSIONS=%d", opts.ActiveBashSessions),
 			fmt.Sprintf("FAKE_START_FAILS=%v", opts.StartFails),
 			fmt.Sprintf("FAKE_STOP_FAILS=%v", opts.StopFails),
 			fmt.Sprintf("FAKE_BUILD_FAILS=%v", opts.BuildFails),
@@ -354,6 +359,17 @@ func dispatch(args []string) int {
 	// ---- ps -----------------------------------------------------------------
 	case "ps":
 		fmt.Println("[]")
+		return 0
+
+	// ---- top (activeBashSessions) -------------------------------------------
+	case "top":
+		// Output: one header line + one "bash" line per active session.
+		fmt.Println("COMMAND")
+		n := 0
+		fmt.Sscanf(os.Getenv("FAKE_ACTIVE_BASH_SESSIONS"), "%d", &n)
+		for i := 0; i < n; i++ {
+			fmt.Println("bash")
+		}
 		return 0
 
 	// ---- simple lifecycle ---------------------------------------------------
