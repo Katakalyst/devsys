@@ -21,12 +21,13 @@ import (
 // or to reauthenticate after a logout).
 var authCmd = &cobra.Command{
 	Use:   "auth",
-	Short: "Manage shared Claude/Codex credentials and the bootstrap GitLab PAT",
+	Short: "Manage shared Claude/Codex credentials and bootstrap platform PATs",
 }
 
 var authClaudeForce bool
 var authCodexForce bool
 var authGitLabForce bool
+var authGitHubForce bool
 
 var authClaudeCmd = &cobra.Command{
 	Use:   "claude",
@@ -58,14 +59,22 @@ var authGitLabCmd = &cobra.Command{
 	RunE:  runAuthGitLab,
 }
 
+var authGitHubCmd = &cobra.Command{
+	Use:   "github",
+	Short: "Set or replace the bootstrap GitHub PAT devsys uses to create repos and register deploy keys",
+	RunE:  runAuthGitHub,
+}
+
 func init() {
 	authClaudeCmd.Flags().BoolVar(&authClaudeForce, "force", false, "Reseed even if the volume already has credentials, overwriting them")
 	authCodexCmd.Flags().BoolVar(&authCodexForce, "force", false, "Reseed even if the volume already has credentials, overwriting them")
 	authGitLabCmd.Flags().BoolVar(&authGitLabForce, "force", false, "Replace the existing bootstrap PAT secret")
+	authGitHubCmd.Flags().BoolVar(&authGitHubForce, "force", false, "Replace the existing bootstrap PAT secret")
 
 	authCmd.AddCommand(authClaudeCmd)
 	authCmd.AddCommand(authCodexCmd)
 	authCmd.AddCommand(authGitLabCmd)
+	authCmd.AddCommand(authGitHubCmd)
 }
 
 // authSeedAgentVolume seeds volumeName from hostDir, the same one-time-copy
@@ -165,6 +174,39 @@ func volumeHasContent(volumeName string) bool {
 		"-c", "ls -A /data 2>/dev/null",
 	)
 	return err == nil && strings.TrimSpace(out) != ""
+}
+
+func runAuthGitHub(cmd *cobra.Command, args []string) error {
+	const bootstrapSecretName = "devsys-bootstrap-github-token"
+
+	if podman.SecretExists(bootstrapSecretName) {
+		if !authGitHubForce {
+			fmt.Println("Bootstrap GitHub PAT secret already exists. Pass --force to replace it.")
+			return nil
+		}
+		fmt.Println("Replacing existing bootstrap GitHub PAT...")
+		if err := podman.DeleteSecret(bootstrapSecretName); err != nil {
+			return fmt.Errorf("cannot remove existing secret: %w", err)
+		}
+	}
+
+	fmt.Print("Enter bootstrap GitHub PAT (input hidden): ")
+	patBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return fmt.Errorf("cannot read PAT: %w", err)
+	}
+	pat := strings.TrimSpace(string(patBytes))
+	if pat == "" {
+		return fmt.Errorf("bootstrap PAT cannot be empty")
+	}
+
+	labels := map[string]string{"devsys": "true"}
+	if err := podman.CreateSecretFromStdin(bootstrapSecretName, pat, labels); err != nil {
+		return fmt.Errorf("cannot store bootstrap PAT: %w", err)
+	}
+	fmt.Printf("  Stored secret %s.\n", bootstrapSecretName)
+	return nil
 }
 
 func runAuthGitLab(cmd *cobra.Command, args []string) error {
