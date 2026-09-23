@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,13 @@ func runEnter(cmd *cobra.Command, args []string) error {
 
 	if !podman.ContainerExists(containerName) {
 		return fmt.Errorf("container %s does not exist — run 'devsys init' first", containerName)
+	}
+
+	// Block if the project's own .devsys/Containerfile has been edited since
+	// the image was built — the running container would be inconsistent with
+	// the declared stack. Old images without the label are silently skipped.
+	if err := checkContainerfileStale(projectName); err != nil {
+		return err
 	}
 
 	// Ensure container is running.
@@ -74,6 +82,38 @@ func activeBashSessions(containerName string) int {
 		}
 	}
 	return count
+}
+
+// checkContainerfileStale returns an error if the project's .devsys/Containerfile
+// has changed since the image was last built. It compares the file's current
+// SHA256 hash against the devsys.containerfile-hash label baked into the image
+// at build time. Gracefully skips (returns nil) when the image has no label —
+// that means it was built before this feature was introduced.
+func checkContainerfileStale(projectName string) error {
+	containerName := fmt.Sprintf("devsys-%s", projectName)
+	projectPath, err := getProjectPath(containerName)
+	if err != nil {
+		return fmt.Errorf("cannot determine project path for %s: %w", projectName, err)
+	}
+	containerfilePath := filepath.Join(projectPath, ".devsys", "Containerfile")
+	data, err := os.ReadFile(containerfilePath)
+	if err != nil {
+		return fmt.Errorf("cannot read .devsys/Containerfile: %w", err)
+	}
+	currentHash := fmt.Sprintf("%x", sha256.Sum256(data))
+
+	imageTag := fmt.Sprintf("devsys-%s", projectName)
+	storedHash, err := podman.GetImageLabel(imageTag, "devsys.containerfile-hash")
+	if err != nil {
+		return fmt.Errorf("cannot read image label for %s: %w", imageTag, err)
+	}
+	if storedHash == "" {
+		return fmt.Errorf("image %s has no containerfile hash — run 'devsys rebuild %s' to rebuild", imageTag, projectName)
+	}
+	if currentHash != storedHash {
+		return fmt.Errorf(".devsys/Containerfile has changed since the last build — run 'devsys rebuild %s' first", projectName)
+	}
+	return nil
 }
 
 // checkStaleness prints a non-blocking warning if this project's base image

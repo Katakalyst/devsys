@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,18 @@ func injectStdin(t *testing.T, input string) {
 // ---------------------------------------------------------------------------
 // runEnter
 // ---------------------------------------------------------------------------
+
+// makeEnterProject creates a temp project dir with .devsys/Containerfile and
+// returns (projectPath, containerfileHash) for use in podmanfake.Options.
+// Every runEnter test that expects success must set both, because
+// checkContainerfileStale is a hard block — no graceful skips.
+func makeEnterProject(t *testing.T) (projectPath, hash string) {
+	t.Helper()
+	dir := t.TempDir()
+	makeContainerfile(t, dir)
+	contents := []byte("FROM devsys-base:1.0.0\n")
+	return dir, containerfileHash(contents)
+}
 
 // skipStalenessChecks redirects the cache dir to a temp one and pre-marks
 // the throttle keys for staleness and auth checks, so tests exercising
@@ -97,10 +110,14 @@ func TestCheckAgentAuth_PerProjectWarningAndThrottle(t *testing.T) {
 }
 
 func TestRunEnter_ContainerRunning_OpensBashSession(t *testing.T) {
+	projectPath, hash := makeEnterProject(t)
 	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: true,
-		SecretExists:     false, // no token secret → checkTokenExpiry silently returns
+		ContainerExists:        true,
+		ContainerRunning:       true,
+		SecretExists:           false, // no token secret → checkTokenExpiry silently returns
+		ProjectPath:            projectPath,
+		ImagePresent:           true,
+		ImageContainerfileHash: hash,
 	})
 	skipStalenessChecks(t, "testproject")
 
@@ -118,10 +135,14 @@ func TestRunEnter_ContainerRunning_OpensBashSession(t *testing.T) {
 }
 
 func TestRunEnter_ContainerStopped_StartsBeforeEntering(t *testing.T) {
+	projectPath, hash := makeEnterProject(t)
 	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: false,
-		SecretExists:     false,
+		ContainerExists:        true,
+		ContainerRunning:       false,
+		SecretExists:           false,
+		ProjectPath:            projectPath,
+		ImagePresent:           true,
+		ImageContainerfileHash: hash,
 	})
 	skipStalenessChecks(t, "testproject")
 
@@ -141,11 +162,15 @@ func TestRunEnter_TokenExpiringSoon_WarnsAndStillEnters(t *testing.T) {
 	// Token expires in 10 days — within the 30-day warning window.
 	soon := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
 
+	projectPath, hash := makeEnterProject(t)
 	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: true,
-		SecretExists:     true,
-		SecretExpiresAt:  soon,
+		ContainerExists:        true,
+		ContainerRunning:       true,
+		SecretExists:           true,
+		SecretExpiresAt:        soon,
+		ProjectPath:            projectPath,
+		ImagePresent:           true,
+		ImageContainerfileHash: hash,
 	})
 	skipStalenessChecks(t, "testproject")
 
@@ -162,10 +187,14 @@ func TestRunEnter_TokenExpiringSoon_WarnsAndStillEnters(t *testing.T) {
 
 func TestRunEnter_OtherSessionsOpen_KeepsContainerRunning(t *testing.T) {
 	// Another bash session is still open when this one exits → no stop.
+	projectPath, hash := makeEnterProject(t)
 	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:    true,
-		ContainerRunning:   true,
-		ActiveBashSessions: 1,
+		ContainerExists:        true,
+		ContainerRunning:       true,
+		ActiveBashSessions:     1,
+		ProjectPath:            projectPath,
+		ImagePresent:           true,
+		ImageContainerfileHash: hash,
 	})
 	skipStalenessChecks(t, "testproject")
 
@@ -190,10 +219,14 @@ func TestRunEnter_NoContainer_ReturnsError(t *testing.T) {
 }
 
 func TestRunEnter_StartFails_ReturnsError(t *testing.T) {
+	projectPath, hash := makeEnterProject(t)
 	podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:  true,
-		ContainerRunning: false,
-		StartFails:       true,
+		ContainerExists:        true,
+		ContainerRunning:       false,
+		StartFails:             true,
+		ProjectPath:            projectPath,
+		ImagePresent:           true,
+		ImageContainerfileHash: hash,
 	})
 
 	err := runEnter(nil, []string{"testproject"})
@@ -350,8 +383,24 @@ func TestWarnIfCLIOutdated_ThrottledPattern(t *testing.T) {
 // rebuildProject
 // ---------------------------------------------------------------------------
 
+// makeContainerfile creates a minimal .devsys/Containerfile at dir so that
+// buildImage can read and hash it. Rebuilds tests are built around a fake
+// podman that never does real builds, but buildImage now hashes the file
+// before invoking podman build, so the file must exist.
+func makeContainerfile(t *testing.T, dir string) {
+	t.Helper()
+	devsysDir := filepath.Join(dir, ".devsys")
+	if err := os.MkdirAll(devsysDir, 0o755); err != nil {
+		t.Fatalf("makeContainerfile: mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(devsysDir, "Containerfile"), []byte("FROM devsys-base:1.0.0\n"), 0o644); err != nil {
+		t.Fatalf("makeContainerfile: write: %v", err)
+	}
+}
+
 func TestRebuildProject_BuildRmCreate(t *testing.T) {
 	projectPath := t.TempDir()
+	makeContainerfile(t, projectPath)
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: true,
 		VolumeExists:    true, // skip volume creation for simplicity
@@ -391,6 +440,7 @@ func TestRebuildProject_NoProjectPath_ReturnsError(t *testing.T) {
 
 func TestRebuildProject_BuildFails_ReturnsError(t *testing.T) {
 	projectPath := t.TempDir()
+	makeContainerfile(t, projectPath)
 	podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: true,
 		VolumeExists:    true,
@@ -406,6 +456,7 @@ func TestRebuildProject_BuildFails_ReturnsError(t *testing.T) {
 
 func TestRebuildProject_CreateFails_ReturnsError(t *testing.T) {
 	projectPath := t.TempDir()
+	makeContainerfile(t, projectPath)
 	podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: true,
 		VolumeExists:    true,
@@ -421,6 +472,7 @@ func TestRebuildProject_CreateFails_ReturnsError(t *testing.T) {
 
 func TestRebuildProject_NoExistingContainer_SkipsRm(t *testing.T) {
 	projectPath := t.TempDir()
+	makeContainerfile(t, projectPath)
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: false, // no container to remove before recreating
 		VolumeExists:    true,
@@ -688,6 +740,7 @@ func withDryRun(t *testing.T, v bool) *bytes.Buffer {
 
 func TestRebuildProject_DryRun_SkipsBuildRmCreate(t *testing.T) {
 	projectPath := t.TempDir()
+	makeContainerfile(t, projectPath)
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: true,
 		VolumeExists:    true,

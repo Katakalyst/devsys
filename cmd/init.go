@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -218,7 +219,15 @@ func resolveWorkspacePath(workspaceRoot, relPath string) (string, error) {
 }
 
 func buildImage(tag, containerfile, contextPath string) error {
-	_, err := podman.RunPodman("build", "-t", tag, "--label", "devsys=true", "-f", containerfile, contextPath)
+	data, err := os.ReadFile(containerfile)
+	if err != nil {
+		return fmt.Errorf("cannot read Containerfile: %w", err)
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+	_, err = podman.RunPodman("build", "-t", tag,
+		"--label", "devsys=true",
+		"--label", "devsys.containerfile-hash="+hash,
+		"-f", containerfile, contextPath)
 	return err
 }
 

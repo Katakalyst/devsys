@@ -141,6 +141,20 @@ func GetSecretLabels(name string) (map[string]string, error) {
 	return labels, nil
 }
 
+// GetImageLabel returns the value of a named label from a local image.
+// Returns ("", nil) when the label is absent (not an error — callers use this
+// to gracefully skip checks on images built before a label was introduced).
+// Returns an error only when the image does not exist or podman fails.
+func GetImageLabel(imageTag, label string) (string, error) {
+	out, err := RunPodman("image", "inspect", "--format",
+		fmt.Sprintf(`{{index .Config.Labels %q}}`, label),
+		imageTag)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // ContainerExists reports whether a container with the given name exists (any state).
 func ContainerExists(name string) bool {
 	_, err := RunPodman("container", "inspect", name)

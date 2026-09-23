@@ -56,6 +56,10 @@ type Options struct {
 	// ImagePresent makes `podman image inspect` succeed (non-empty ID output).
 	// When false the command exits non-zero, simulating a missing image.
 	ImagePresent bool
+	// ImageContainerfileHash is the value returned for the devsys.containerfile-hash
+	// label when `podman image inspect --format '{{index .Config.Labels "..."}}' is
+	// called. Empty string simulates an image built before the label was introduced.
+	ImageContainerfileHash string
 	// StartFails makes `podman start` exit non-zero (simulates a failed start).
 	StartFails bool
 	// StopFails makes `podman stop` exit non-zero (simulates a failed stop).
@@ -184,6 +188,7 @@ func Install(t *testing.T, opts Options) *Recorder {
 			"GO_WANT_FAKE_PODMAN=1",
 			"FAKE_CALL_LOG="+logPath,
 			fmt.Sprintf("FAKE_IMAGE_PRESENT=%v", opts.ImagePresent),
+			"FAKE_IMAGE_CONTAINERFILE_HASH="+opts.ImageContainerfileHash,
 			fmt.Sprintf("FAKE_CONTAINER_EXISTS=%v", opts.ContainerExists),
 			fmt.Sprintf("FAKE_CONTAINER_RUNNING=%v", opts.ContainerRunning),
 			fmt.Sprintf("FAKE_SECRET_EXISTS=%v", opts.SecretExists),
@@ -252,15 +257,20 @@ func dispatch(args []string) int {
 
 	switch args[0] {
 
-	// ---- image inspect (runDoctor base-image check) -------------------------
+	// ---- image inspect (runDoctor base-image check, GetImageLabel) ----------
 	case "image":
 		if len(args) >= 2 && args[1] == "inspect" {
-			if envBool("FAKE_IMAGE_PRESENT") {
-				fmt.Println("sha256:fakeimageid")
+			if !envBool("FAKE_IMAGE_PRESENT") {
+				fmt.Fprintln(os.Stderr, "image not found")
+				return 1
+			}
+			// Label lookup: return just the label value.
+			if strings.Contains(joined, "devsys.containerfile-hash") {
+				fmt.Println(os.Getenv("FAKE_IMAGE_CONTAINERFILE_HASH"))
 				return 0
 			}
-			fmt.Fprintln(os.Stderr, "image not found")
-			return 1
+			fmt.Println("sha256:fakeimageid")
+			return 0
 		}
 		return 0
 
