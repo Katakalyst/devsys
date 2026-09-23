@@ -61,7 +61,7 @@ var authGitLabCmd = &cobra.Command{
 
 var authGitHubCmd = &cobra.Command{
 	Use:   "github",
-	Short: "Set or replace the bootstrap GitHub PAT devsys uses to create repos and register deploy keys",
+	Short: "Set or replace the bootstrap GitHub PAT devsys uses to create repos",
 	RunE:  runAuthGitHub,
 }
 
