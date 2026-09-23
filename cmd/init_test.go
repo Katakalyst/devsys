@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -52,6 +53,77 @@ func TestCreateLocalRepo_AlreadyExists(t *testing.T) {
 	reader2 := bufio.NewReader(strings.NewReader("\n"))
 	if err := createLocalRepo(reader2, workspaceRoot); err == nil {
 		t.Error("expected error creating a repo where one already exists, got nil")
+	}
+}
+
+// TestCreateLocalRepo_RejectsEscapingPath covers documents/TODO.md's fixed
+// path-escape item: entering ".." (or a path that cleans to one) must not
+// initialize a repo outside the workspace, despite the prompt's promise that
+// the path is within it.
+func TestCreateLocalRepo_RejectsEscapingPath(t *testing.T) {
+	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	reader := bufio.NewReader(strings.NewReader("..\n"))
+	if err := createLocalRepo(reader, workspaceRoot); err == nil {
+		t.Error("expected error for \"..\", got nil")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".git")); err == nil {
+		t.Error("must not have created a repo outside the workspace")
+	}
+}
+
+func TestResolveWorkspacePath(t *testing.T) {
+	root := t.TempDir()
+	workspaceRoot, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	valid := []string{
+		".",
+		"frontend",
+		filepath.Join("libs", "shared"),
+		filepath.Join("a", "..", "b"), // cleans to "b", stays within
+	}
+	for _, relPath := range valid {
+		got, err := resolveWorkspacePath(workspaceRoot, relPath)
+		if err != nil {
+			t.Errorf("resolveWorkspacePath(%q): unexpected error: %v", relPath, err)
+			continue
+		}
+		if !strings.HasPrefix(got, workspaceRoot) {
+			t.Errorf("resolveWorkspacePath(%q) = %q, want a path under %q", relPath, got, workspaceRoot)
+		}
+	}
+
+	escaping := []string{
+		"..",
+		filepath.Join("..", "sibling"),
+		filepath.Join("a", "..", ".."),
+		filepath.Join("a", "..", "..", "b"),
+	}
+	for _, relPath := range escaping {
+		if _, err := resolveWorkspacePath(workspaceRoot, relPath); err == nil {
+			t.Errorf("resolveWorkspacePath(%q): expected error (escapes workspace), got nil", relPath)
+		}
+	}
+
+	otherAbs := "/etc"
+	if runtime.GOOS == "windows" {
+		otherAbs = filepath.VolumeName(workspaceRoot) + `\etc`
+	}
+	absolute := []string{
+		filepath.Join(root, "elsewhere"), // absolute, even though it happens to be under root
+		otherAbs,
+	}
+	for _, relPath := range absolute {
+		if _, err := resolveWorkspacePath(workspaceRoot, relPath); err == nil {
+			t.Errorf("resolveWorkspacePath(%q): expected error (absolute path rejected), got nil", relPath)
+		}
 	}
 }
 

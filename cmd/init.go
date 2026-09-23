@@ -173,7 +173,11 @@ func createLocalRepo(reader *bufio.Reader, workspaceRoot string) error {
 		relPath = "."
 	}
 
-	repoPath := filepath.Join(workspaceRoot, relPath)
+	repoPath, err := resolveWorkspacePath(workspaceRoot, relPath)
+	if err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(repoPath, 0o755); err != nil {
 		return fmt.Errorf("cannot create directory: %w", err)
 	}
@@ -185,6 +189,32 @@ func createLocalRepo(reader *bufio.Reader, workspaceRoot string) error {
 	}
 	fmt.Printf("Created empty repo at %s\n", relPath)
 	return nil
+}
+
+// resolveWorkspacePath validates that relPath, joined onto workspaceRoot,
+// actually stays within workspaceRoot — the "Path within workspace" prompt
+// promises this, but filepath.Join alone doesn't enforce it: it cleans ".."
+// segments syntactically without checking where the cleaned result actually
+// lands, so relPath could still walk the result outside workspaceRoot
+// (documents/TODO.md). Rejects an absolute relPath outright — the prompt is
+// for a path *within* the workspace, never an arbitrary host path — and any
+// relative path that escapes workspaceRoot once cleaned.
+func resolveWorkspacePath(workspaceRoot, relPath string) (string, error) {
+	if filepath.IsAbs(relPath) {
+		return "", fmt.Errorf("path must be relative to the workspace, not absolute: %q", relPath)
+	}
+
+	absRoot, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve workspace root: %w", err)
+	}
+	absRoot = filepath.Clean(absRoot)
+
+	joined := filepath.Join(absRoot, relPath)
+	if joined != absRoot && !strings.HasPrefix(joined, absRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes the workspace", relPath)
+	}
+	return joined, nil
 }
 
 func buildImage(tag, containerfile, contextPath string) error {
