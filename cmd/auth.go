@@ -226,7 +226,15 @@ func authSeedAgentVolume(volumeName, hostDir string, force bool) error {
 		// Clear first so a --force reseed fully replaces stale credential
 		// files rather than merging old and new (the actual mechanism for
 		// "switch this volume to a different credential").
-		"-c", "rm -rf /dst/.[!.]* /dst/* 2>/dev/null; cp -a /src/. /dst/",
+		// If .claude.json isn't present in the source (Claude Code only writes
+		// it during active sessions, so it's absent between sessions), restore
+		// the latest backup — Claude Code v2.1+ requires it to skip onboarding;
+		// without it the container treats every start as a fresh install and
+		// prompts for login even though .credentials.json is present.
+		"-c", `rm -rf /dst/.[!.]* /dst/* 2>/dev/null; cp -a /src/. /dst/; ` +
+			`if [ ! -f /dst/.claude.json ]; then ` +
+			`latest=$(ls -t /dst/backups/.claude.json.backup.* 2>/dev/null | head -1); ` +
+			`if [ -n "$latest" ]; then cp "$latest" /dst/.claude.json; fi; fi`,
 	); err != nil {
 		return fmt.Errorf("cannot seed volume %s: %w", volumeName, err)
 	}
