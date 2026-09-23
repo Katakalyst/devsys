@@ -146,9 +146,26 @@ func checkAgentAuth(agent string) {
 	markChecked(cacheKey)
 }
 
-// checkTokenExpiry warns if the project's GitLab token expires within 30 days.
+// checkTokenExpiry warns about any expiring GitLab token for the project —
+// both the legacy single project-wide secret (devsys-<project>-gitlab-token,
+// still held by any project created before the Git Remote & Credential
+// Spec's rework and never re-authed since) and every per-repo secret the
+// new devsys init/auth actually create. `secret rotate` no longer exists
+// (Phase 7) — `devsys auth <project>` is the rerunnable command for this now,
+// for both the legacy and per-repo cases alike.
 func checkTokenExpiry(projectName string) {
-	secretName := fmt.Sprintf("devsys-%s-gitlab-token", projectName)
+	warnIfExpiring(fmt.Sprintf("devsys-%s-gitlab-token", projectName), projectName)
+
+	secretNames, err := projectRepoSecretNames(projectName)
+	if err != nil {
+		return
+	}
+	for _, secretName := range secretNames {
+		warnIfExpiring(secretName, projectName)
+	}
+}
+
+func warnIfExpiring(secretName, projectName string) {
 	labels, err := podman.GetSecretLabels(secretName)
 	if err != nil {
 		return
@@ -162,8 +179,8 @@ func checkTokenExpiry(projectName string) {
 		return
 	}
 	daysLeft := int(time.Until(expiresAt).Hours() / 24)
-	if daysLeft <= 30 {
-		fmt.Fprintf(os.Stderr, "Warning: GitLab token for '%s' expires in %d day(s) (%s). Run 'devsys secret rotate %s' to renew.\n",
-			projectName, daysLeft, expiresAtStr, projectName)
+	if daysLeft <= tokenExpiryWarnDays {
+		fmt.Fprintf(os.Stderr, "Warning: token %s expires in %d day(s) (%s). Run 'devsys auth %s' to renew.\n",
+			secretName, daysLeft, expiresAtStr, projectName)
 	}
 }

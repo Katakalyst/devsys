@@ -50,7 +50,6 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(rmCmd)
 	rootCmd.AddCommand(cleanCmd)
-	rootCmd.AddCommand(secretCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(uninstallCmd)

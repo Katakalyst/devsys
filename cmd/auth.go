@@ -180,7 +180,7 @@ func authSeedAgentVolume(volumeName, hostDir string, force bool) error {
 // volumeHasContent reports whether volumeName already holds any files, by
 // running a disposable container against the current devsys-base image.
 // Podman auto-creates a named volume empty the first time it's referenced
-// (e.g. by createProjectContainer), so VolumeExists alone can't distinguish
+// (e.g. by createProjectContainerWithRepoSecrets), so VolumeExists alone can't distinguish
 // "never authenticated" from "authenticated" — this can. Used by both the
 // auth commands (to decide whether a reseed needs --force/confirmation) and
 // doctor/enter's "no auth set" checks.

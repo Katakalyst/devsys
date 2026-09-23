@@ -1332,11 +1332,10 @@ func recreateContainerForAuth(projectName string, interactive bool) error {
 // createProjectContainerWithRepoSecrets creates the persistent container
 // mounting every per-repo secret this project actually has as a plain file
 // (Podman's default mount, /run/secrets/<secret-name>) — not the single
-// type=env,target=GITLAB_TOKEN mount cmd/init.go's createProjectContainer
-// still uses. Fixes the env-var collision a project with more than one
-// per-repo token would otherwise hit (Git Remote & Credential Spec §7's
-// multi-token fix). cmd/init.go's own container-creation path is Phase 6's
-// job to switch over to this, not yet done.
+// type=env,target=GITLAB_TOKEN mount. Fixes the env-var collision a project
+// with more than one per-repo token would otherwise hit (Git Remote &
+// Credential Spec §7's multi-token fix). Used by this file's own
+// recreateContainerForAuth, plus cmd/init.go and cmd/rebuild.go.
 func createProjectContainerWithRepoSecrets(containerName, projectName, projectPath, imageTag string) error {
 	trivyVolume := fmt.Sprintf("devsys-%s-trivy-db", projectName)
 

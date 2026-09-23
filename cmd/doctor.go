@@ -54,7 +54,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	// Check 4: Claude/Codex auth volumes actually hold credentials, not just
 	// exist — a volume can exist empty (e.g. auto-created by
-	// createProjectContainer) without ever having been authenticated.
+	// createProjectContainerWithRepoSecrets) without ever having been authenticated.
 	claudeAuthed := podman.VolumeExists("devsys-claude-auth") && volumeHasContent("devsys-claude-auth")
 	check("Claude Code auth", claudeAuthed, "run 'devsys auth claude', or log in from inside 'devsys enter'")
 	codexAuthed := podman.VolumeExists("devsys-codex-auth") && volumeHasContent("devsys-codex-auth")
