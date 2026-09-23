@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -358,6 +359,50 @@ func TestProjectRepoSecretNames_SkipsNoRemoteAndDeduplicates(t *testing.T) {
 	}
 	if len(names) != 1 || names[0] != "devsys-project-owner-shared-github-token" {
 		t.Fatalf("names = %v, want one deduplicated shared secret", names)
+	}
+}
+
+func TestRecreateContainerForAuth_DeclinedExplainsRealRecoveryPath(t *testing.T) {
+	rec := podmanfake.Install(t, podmanfake.Options{
+		ContainerExists:  true,
+		ContainerRunning: true,
+	})
+	injectStdin(t, "n\n")
+
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("capture stdout: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() {
+		os.Stdout = origStdout
+		r.Close()
+	})
+
+	err = recreateContainerForAuth("testproject", true)
+	w.Close()
+	os.Stdout = origStdout
+	if err != nil {
+		t.Fatalf("recreateContainerForAuth: %v", err)
+	}
+	outBytes, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	out := string(outBytes)
+	for _, want := range []string{"credentials are stored", "Exit every active 'devsys enter testproject' session", "devsys rebuild testproject"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output should contain %q, got %q", want, out)
+		}
+	}
+	if strings.Contains(out, "Run 'devsys auth testproject' again") || strings.Contains(out, "or 'devsys enter testproject'") {
+		t.Errorf("output still suggests a command that cannot update secret mounts: %q", out)
+	}
+	for _, subcommand := range []string{"stop", "rm", "create"} {
+		if rec.HasSubcommand(subcommand) {
+			t.Errorf("declined recreation must not call podman %s; calls: %v", subcommand, rec.Calls())
+		}
 	}
 }
 

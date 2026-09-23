@@ -1299,7 +1299,7 @@ func recreateContainerForAuth(projectName string, interactive bool) error {
 		if interactive {
 			reader := bufio.NewReader(os.Stdin)
 			if !confirm(reader, "Proceed?") {
-				fmt.Printf("  Skipped — credentials stored but not yet mounted. Run 'devsys auth %s' again, or 'devsys enter %s', to pick them up.\n", projectName, projectName)
+				fmt.Printf("  Skipped — credentials are stored, but the running container still has its old secret mounts. Exit every active 'devsys enter %s' session, then run 'devsys rebuild %s'.\n", projectName, projectName)
 				return nil
 			}
 		} else {
