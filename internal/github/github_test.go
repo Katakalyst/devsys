@@ -89,6 +89,51 @@ func TestAPIBaseForHost(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// GetRepo
+// ---------------------------------------------------------------------------
+
+func TestGetRepo_Success(t *testing.T) {
+	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/owner/myrepo" {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"id":        42,
+			"full_name": "owner/myrepo",
+		})
+	})
+
+	if err := c.GetRepo("owner", "myrepo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetRepo_HTTPError(t *testing.T) {
+	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	if err := c.GetRepo("owner", "missing"); err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+}
+
+func TestGetRepo_DryRun(t *testing.T) {
+	calls := 0
+	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+	})
+	c.DryRun = true
+
+	if err := c.GetRepo("owner", "myrepo"); err != nil {
+		t.Fatalf("unexpected error in dry-run: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("server called %d times; expected 0 in dry-run", calls)
+	}
+}
+
 func TestCreateRepo_DryRun(t *testing.T) {
 	calls := 0
 	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {

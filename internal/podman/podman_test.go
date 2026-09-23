@@ -387,6 +387,69 @@ func createTestVolume(t *testing.T, name string) bool {
 	return true
 }
 
+// ---------------------------------------------------------------------------
+// GetImageLabel — uses the fake so no real image is needed.
+// ---------------------------------------------------------------------------
+
+func TestGetImageLabel_ContainerfileHash(t *testing.T) {
+	podmanfake.Install(t, podmanfake.Options{
+		ImagePresent:           true,
+		ImageContainerfileHash: "abc123",
+	})
+
+	val, err := podman.GetImageLabel("devsys-myproject", "devsys.containerfile-hash")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "abc123" {
+		t.Errorf("want %q, got %q", "abc123", val)
+	}
+}
+
+func TestGetImageLabel_PortsHash(t *testing.T) {
+	podmanfake.Install(t, podmanfake.Options{
+		ImagePresent:   true,
+		ImagePortsHash: "deadbeef",
+	})
+
+	val, err := podman.GetImageLabel("devsys-myproject", "devsys.ports-hash")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "deadbeef" {
+		t.Errorf("want %q, got %q", "deadbeef", val)
+	}
+}
+
+func TestGetImageLabel_ImageNotFound(t *testing.T) {
+	podmanfake.Install(t, podmanfake.Options{
+		ImagePresent: false,
+	})
+
+	_, err := podman.GetImageLabel("nonexistent-image", "devsys.containerfile-hash")
+	if err == nil {
+		t.Fatal("expected error for non-existent image, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListDevsysSecrets / ListDevsysImages — no error on empty result.
+// ---------------------------------------------------------------------------
+
+func TestListDevsysSecrets_NoError(t *testing.T) {
+	_, err := podman.ListDevsysSecrets()
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestListDevsysImages_NoError(t *testing.T) {
+	_, err := podman.ListDevsysImages()
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestListDevsysVolumes_WithData(t *testing.T) {
 	setDryRun(t, false)
 	volName := "devsys-test-list-volume-coverage"
