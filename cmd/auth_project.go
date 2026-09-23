@@ -426,11 +426,13 @@ func scriptableRemove(st *repoAuthStatus) (bool, error) {
 }
 
 // scriptableEnsure is the bare scriptable form's operation (no --create/
-// --attach/--rotate/--remove given): R11 "ensure/refresh" — confirm a
-// credential is present and working, safe to call whether or not one
-// already exists, never implying a discard of one that's still fine. Spec
-// §9: "devsys auth <project> [repo] # bare — only valid if repo already has
-// a remote."
+// --attach/--rotate/--remove given): R11 "ensure" — confirm a credential is
+// provisioned in devsys's local state, safe to call whether or not one already
+// exists, never implying a discard of one that's still fine. This deliberately
+// does not make a platform API health check: known expiry is warned from local
+// metadata, while invalid/revoked/scope failures surface on actual git/glab/gh
+// use. Spec §9: "devsys auth <project> [repo] # bare — only valid if repo
+// already has a remote."
 func scriptableEnsure(projectName string, st *repoAuthStatus) (bool, error) {
 	switch {
 	case !st.HasRemote:
