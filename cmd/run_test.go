@@ -51,15 +51,16 @@ func injectStdin(t *testing.T, input string) {
 // ---------------------------------------------------------------------------
 
 // makeEnterProject creates a temp project dir with .devsys/Containerfile and
-// returns (projectPath, containerfileHash) for use in podmanfake.Options.
-// Every runEnter test that expects success must set both, because
-// checkContainerfileStale is a hard block — no graceful skips.
-func makeEnterProject(t *testing.T) (projectPath, hash string) {
+// returns (projectPath, containerfileHash, portsHash) for use in podmanfake.Options.
+// Every runEnter test that expects success must set all three, because both
+// checkContainerfileStale and checkPortsStale are hard blocks — no graceful skips.
+func makeEnterProject(t *testing.T) (projectPath, cfHash, pHash string) {
 	t.Helper()
 	dir := t.TempDir()
 	makeContainerfile(t, dir)
 	contents := []byte("FROM devsys-base:1.0.0\n")
-	return dir, containerfileHash(contents)
+	// No .devsys/ports file — hash of empty bytes is the stable "absent" state.
+	return dir, containerfileHash(contents), portsFileHash(dir)
 }
 
 // skipStalenessChecks redirects the cache dir to a temp one and pre-marks
@@ -110,14 +111,15 @@ func TestCheckAgentAuth_PerProjectWarningAndThrottle(t *testing.T) {
 }
 
 func TestRunEnter_ContainerRunning_OpensBashSession(t *testing.T) {
-	projectPath, hash := makeEnterProject(t)
+	projectPath, cfHash, pHash := makeEnterProject(t)
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists:        true,
 		ContainerRunning:       true,
 		SecretExists:           false, // no token secret → checkTokenExpiry silently returns
 		ProjectPath:            projectPath,
 		ImagePresent:           true,
-		ImageContainerfileHash: hash,
+		ImageContainerfileHash: cfHash,
+		ImagePortsHash:         pHash,
 	})
 	skipStalenessChecks(t, "testproject")
 
@@ -135,14 +137,15 @@ func TestRunEnter_ContainerRunning_OpensBashSession(t *testing.T) {
 }
 
 func TestRunEnter_ContainerStopped_StartsBeforeEntering(t *testing.T) {
-	projectPath, hash := makeEnterProject(t)
+	projectPath, cfHash, pHash := makeEnterProject(t)
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists:        true,
 		ContainerRunning:       false,
 		SecretExists:           false,
 		ProjectPath:            projectPath,
 		ImagePresent:           true,
-		ImageContainerfileHash: hash,
+		ImageContainerfileHash: cfHash,
+		ImagePortsHash:         pHash,
 	})
 	skipStalenessChecks(t, "testproject")
 
@@ -162,7 +165,7 @@ func TestRunEnter_TokenExpiringSoon_WarnsAndStillEnters(t *testing.T) {
 	// Token expires in 10 days — within the 30-day warning window.
 	soon := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
 
-	projectPath, hash := makeEnterProject(t)
+	projectPath, cfHash, pHash := makeEnterProject(t)
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists:        true,
 		ContainerRunning:       true,
@@ -170,7 +173,8 @@ func TestRunEnter_TokenExpiringSoon_WarnsAndStillEnters(t *testing.T) {
 		SecretExpiresAt:        soon,
 		ProjectPath:            projectPath,
 		ImagePresent:           true,
-		ImageContainerfileHash: hash,
+		ImageContainerfileHash: cfHash,
+		ImagePortsHash:         pHash,
 	})
 	skipStalenessChecks(t, "testproject")
 
@@ -187,14 +191,15 @@ func TestRunEnter_TokenExpiringSoon_WarnsAndStillEnters(t *testing.T) {
 
 func TestRunEnter_OtherSessionsOpen_KeepsContainerRunning(t *testing.T) {
 	// Another bash session is still open when this one exits → no stop.
-	projectPath, hash := makeEnterProject(t)
+	projectPath, cfHash, pHash := makeEnterProject(t)
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists:        true,
 		ContainerRunning:       true,
 		ActiveBashSessions:     1,
 		ProjectPath:            projectPath,
 		ImagePresent:           true,
-		ImageContainerfileHash: hash,
+		ImageContainerfileHash: cfHash,
+		ImagePortsHash:         pHash,
 	})
 	skipStalenessChecks(t, "testproject")
 
@@ -219,14 +224,15 @@ func TestRunEnter_NoContainer_ReturnsError(t *testing.T) {
 }
 
 func TestRunEnter_StartFails_ReturnsError(t *testing.T) {
-	projectPath, hash := makeEnterProject(t)
+	projectPath, cfHash, pHash := makeEnterProject(t)
 	podmanfake.Install(t, podmanfake.Options{
 		ContainerExists:        true,
 		ContainerRunning:       false,
 		StartFails:             true,
 		ProjectPath:            projectPath,
 		ImagePresent:           true,
-		ImageContainerfileHash: hash,
+		ImageContainerfileHash: cfHash,
+		ImagePortsHash:         pHash,
 	})
 
 	err := runEnter(nil, []string{"testproject"})

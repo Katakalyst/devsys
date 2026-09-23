@@ -223,10 +223,12 @@ func buildImage(tag, containerfile, contextPath string) error {
 	if err != nil {
 		return fmt.Errorf("cannot read Containerfile: %w", err)
 	}
-	hash := fmt.Sprintf("%x", sha256.Sum256(data))
+	cfHash := fmt.Sprintf("%x", sha256.Sum256(data))
+	portsHash := portsFileHash(contextPath)
 	_, err = podman.RunPodman("build", "-t", tag,
 		"--label", "devsys=true",
-		"--label", "devsys.containerfile-hash="+hash,
+		"--label", "devsys.containerfile-hash="+cfHash,
+		"--label", "devsys.ports-hash="+portsHash,
 		"-f", containerfile, contextPath)
 	return err
 }

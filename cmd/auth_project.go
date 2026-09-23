@@ -1558,6 +1558,14 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 		"--env", "IS_SANDBOX=1",
 	}
 
+	portMappings, err := readPortsFile(projectPath)
+	if err != nil {
+		return fmt.Errorf("cannot read ports file: %w", err)
+	}
+	for _, p := range portMappings {
+		args = append(args, "-p", p)
+	}
+
 	secretNames, err := projectRepoSecretNames(projectName, projectPath)
 	if err != nil {
 		return fmt.Errorf("cannot list project secrets: %w", err)

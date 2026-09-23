@@ -30,8 +30,15 @@ func runEnter(cmd *cobra.Command, args []string) error {
 
 	// Block if the project's own .devsys/Containerfile has been edited since
 	// the image was built — the running container would be inconsistent with
-	// the declared stack. Old images without the label are silently skipped.
+	// the declared stack.
 	if err := checkContainerfileStale(projectName); err != nil {
+		return err
+	}
+
+	// Block if .devsys/ports has changed since the image was built — port
+	// mappings are baked into the container at creation time and cannot be
+	// changed without a rebuild.
+	if err := checkPortsStale(projectName); err != nil {
 		return err
 	}
 
@@ -112,6 +119,32 @@ func checkContainerfileStale(projectName string) error {
 	}
 	if currentHash != storedHash {
 		return fmt.Errorf(".devsys/Containerfile has changed since the last build — run 'devsys rebuild %s' first", projectName)
+	}
+	return nil
+}
+
+// checkPortsStale returns an error if .devsys/ports has changed since the
+// image was last built. It compares the file's current SHA256 hash (or the
+// hash of empty bytes when the file is absent) against the devsys.ports-hash
+// label baked into the image at build time.
+func checkPortsStale(projectName string) error {
+	containerName := fmt.Sprintf("devsys-%s", projectName)
+	projectPath, err := getProjectPath(containerName)
+	if err != nil {
+		return fmt.Errorf("cannot determine project path for %s: %w", projectName, err)
+	}
+	currentHash := portsFileHash(projectPath)
+
+	imageTag := fmt.Sprintf("devsys-%s", projectName)
+	storedHash, err := podman.GetImageLabel(imageTag, "devsys.ports-hash")
+	if err != nil {
+		return fmt.Errorf("cannot read image label for %s: %w", imageTag, err)
+	}
+	if storedHash == "" {
+		return fmt.Errorf("image %s has no ports hash — run 'devsys rebuild %s' to rebuild", imageTag, projectName)
+	}
+	if currentHash != storedHash {
+		return fmt.Errorf(".devsys/ports has changed since the last build — run 'devsys rebuild %s' first", projectName)
 	}
 	return nil
 }

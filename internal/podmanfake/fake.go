@@ -60,6 +60,9 @@ type Options struct {
 	// label when `podman image inspect --format '{{index .Config.Labels "..."}}' is
 	// called. Empty string simulates an image built before the label was introduced.
 	ImageContainerfileHash string
+	// ImagePortsHash is the value returned for the devsys.ports-hash label.
+	// Empty string simulates an image built before the label was introduced.
+	ImagePortsHash string
 	// StartFails makes `podman start` exit non-zero (simulates a failed start).
 	StartFails bool
 	// StopFails makes `podman stop` exit non-zero (simulates a failed stop).
@@ -189,6 +192,7 @@ func Install(t *testing.T, opts Options) *Recorder {
 			"FAKE_CALL_LOG="+logPath,
 			fmt.Sprintf("FAKE_IMAGE_PRESENT=%v", opts.ImagePresent),
 			"FAKE_IMAGE_CONTAINERFILE_HASH="+opts.ImageContainerfileHash,
+			"FAKE_IMAGE_PORTS_HASH="+opts.ImagePortsHash,
 			fmt.Sprintf("FAKE_CONTAINER_EXISTS=%v", opts.ContainerExists),
 			fmt.Sprintf("FAKE_CONTAINER_RUNNING=%v", opts.ContainerRunning),
 			fmt.Sprintf("FAKE_SECRET_EXISTS=%v", opts.SecretExists),
@@ -267,6 +271,10 @@ func dispatch(args []string) int {
 			// Label lookup: return just the label value.
 			if strings.Contains(joined, "devsys.containerfile-hash") {
 				fmt.Println(os.Getenv("FAKE_IMAGE_CONTAINERFILE_HASH"))
+				return 0
+			}
+			if strings.Contains(joined, "devsys.ports-hash") {
+				fmt.Println(os.Getenv("FAKE_IMAGE_PORTS_HASH"))
 				return 0
 			}
 			fmt.Println("sha256:fakeimageid")
