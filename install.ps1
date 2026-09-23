@@ -284,5 +284,5 @@ Write-Host "  devsys auth claude    # seed or log in the shared Claude credentia
 Write-Host "  devsys auth codex     # seed or log in the shared Codex credential"
 Write-Host ""
 Write-Host "Then:"
-Write-Host "  devsys init <path>"
+Write-Host "  devsys init <path> <name>"
 Write-Host ""

@@ -24,7 +24,7 @@ devsys auth gitlab    # bootstrap GitLab PAT devsys uses to create projects
 devsys auth claude    # seed or log in the shared Claude credential
 devsys auth codex     # seed or log in the shared Codex credential
 
-devsys init <path>
+devsys init <path> <name>
 devsys enter <project>
 ```
 

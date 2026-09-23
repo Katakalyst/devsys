@@ -53,9 +53,12 @@ func rebuildProject(projectName string) error {
 		}
 	}
 
-	// Recreate container.
+	// Recreate container. Uses the per-repo file-mount secrets, same as
+	// `init`/`auth` (Git Remote & Credential Spec §7) — a project rebuilt
+	// after being created/authed under the new scheme must keep mounting
+	// the same way, not silently regress to the old single-secret env mount.
 	fmt.Printf("Creating container %s ...\n", containerName)
-	if err := createProjectContainer(containerName, projectName, projectPath, imageTag); err != nil {
+	if err := createProjectContainerWithRepoSecrets(containerName, projectName, projectPath, imageTag); err != nil {
 		return fmt.Errorf("cannot recreate container: %w", err)
 	}
 	fmt.Printf("  Container %s recreated.\n", containerName)

@@ -21,47 +21,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// webURLToSSH
-// ---------------------------------------------------------------------------
-
-func TestWebURLToSSH(t *testing.T) {
-	tests := []struct {
-		name    string
-		webURL  string
-		baseURL string
-		want    string
-	}{
-		{
-			name:    "gitlab.com project",
-			webURL:  "https://gitlab.com/namespace/myproject",
-			baseURL: "https://gitlab.com",
-			want:    "git@gitlab.com:namespace/myproject.git",
-		},
-		{
-			name:    "self-hosted gitlab",
-			webURL:  "https://git.internal.example.com/team/repo",
-			baseURL: "https://git.internal.example.com",
-			want:    "git@git.internal.example.com:team/repo.git",
-		},
-		{
-			name:    "nested namespace",
-			webURL:  "https://gitlab.com/group/subgroup/project",
-			baseURL: "https://gitlab.com",
-			want:    "git@gitlab.com:group/subgroup/project.git",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := webURLToSSH(tc.webURL, tc.baseURL)
-			if got != tc.want {
-				t.Errorf("webURLToSSH(%q, %q) = %q; want %q", tc.webURL, tc.baseURL, got, tc.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // containerToProject
 // ---------------------------------------------------------------------------
 
@@ -85,67 +44,6 @@ func TestContainerToProject(t *testing.T) {
 				t.Errorf("containerToProject(%q) = %q; want %q", tc.input, got, tc.want)
 			}
 		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// hostFromURL
-// ---------------------------------------------------------------------------
-
-func TestHostFromURL(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"https://gitlab.com", "gitlab.com"},
-		{"https://git.internal.example.com", "git.internal.example.com"},
-		{"http://mygit.corp", "mygit.corp"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			got := hostFromURL(tc.input)
-			if got != tc.want {
-				t.Errorf("hostFromURL(%q) = %q; want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// remoteNameFromURL
-// ---------------------------------------------------------------------------
-
-func TestRemoteNameFromURL(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"https://github.com/ns/proj.git", "github"},
-		{"git@github.com:ns/proj.git", "github"},
-		{"https://bitbucket.org/ns/proj.git", "bitbucket"},
-		{"git@bitbucket.org:ns/proj.git", "bitbucket"},
-		{"https://dev.azure.com/org/proj/_git/repo", "azure"},
-		{"git@gitlab.mycompany.com:ns/proj.git", "mycompany"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			got := remoteNameFromURL(tc.input)
-			if got != tc.want {
-				t.Errorf("remoteNameFromURL(%q) = %q; want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// hostFromURL — fallback path
-// ---------------------------------------------------------------------------
-
-func TestHostFromURL_Fallback(t *testing.T) {
-	// A bare hostname with no scheme triggers the manual-strip fallback.
-	got := hostFromURL("gitlab.example.com")
-	if got != "gitlab.example.com" {
-		t.Errorf("hostFromURL(bare host) = %q; want %q", got, "gitlab.example.com")
 	}
 }
 

@@ -119,3 +119,41 @@ func runSecretRotate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\nSecret rotation complete for project '%s'.\n", projectName)
 	return nil
 }
+
+// createProjectContainer creates the persistent devsys container with the
+// single-secret, type=env mount — the pre-Git-Remote-&-Credential-Spec
+// behavior. Only this file's `secret rotate` still uses it; every other
+// creation path (`init`, `auth`'s own recreation) now uses
+// createProjectContainerWithRepoSecrets instead (Git Remote & Credential
+// Spec §7's multi-token file-mount fix). Dies with this whole file once
+// Phase 7 removes `secret rotate` — not done yet.
+func createProjectContainer(containerName, projectName, projectPath, imageTag string) error {
+	secretName := fmt.Sprintf("devsys-%s-gitlab-token", projectName)
+	trivyVolume := fmt.Sprintf("devsys-%s-trivy-db", projectName)
+
+	// Ensure all named volumes carry the devsys label.
+	for _, vol := range []string{"devsys-claude-auth", "devsys-codex-auth", trivyVolume} {
+		if !podman.VolumeExists(vol) {
+			if _, err := podman.RunPodman("volume", "create", "--label", "devsys=true", vol); err != nil {
+				return fmt.Errorf("cannot create volume %s: %w", vol, err)
+			}
+		}
+	}
+
+	_, err := podman.RunPodman(
+		"create",
+		"--name", containerName,
+		"--label", "devsys=true",
+		"--volume", projectPath+":"+defaultWorkspaceDest+":Z",
+		"--volume", "devsys-claude-auth:/root/.claude",
+		"--volume", "devsys-codex-auth:/root/.codex",
+		"--volume", trivyVolume+":/root/.cache/trivy",
+		"--secret", fmt.Sprintf("%s,type=env,target=GITLAB_TOKEN", secretName),
+		"--env", "CLAUDE_CONFIG_DIR=/root/.claude",
+		"--env", "CODEX_HOME=/root/.codex",
+		"--env", "TRIVY_CACHE_DIR=/root/.cache/trivy",
+		"--env", "IS_SANDBOX=1",
+		imageTag,
+	)
+	return err
+}
