@@ -116,6 +116,28 @@ func TestRepoDefaultName(t *testing.T) {
 // Remote & Credential Spec §7's corrected GitHub decision).
 // ---------------------------------------------------------------------------
 
+// remoteHasEmbeddedCredentials must distinguish a URL auth itself wrote
+// (embedded userinfo) from a bare URL the agent set via plain `git remote
+// add` — this is what tells rotate whether it's safe to rewrite the remote
+// (Git Remote & Credential Spec §9's rotate mechanical detail).
+func TestRemoteHasEmbeddedCredentials(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://oauth2:glpat-xxx@gitlab.com/owner/project.git", true},
+		{"https://x-access-token:ghp-yyy@github.com/owner/repo.git", true},
+		{"https://gitlab.com/owner/project.git", false},
+		{"https://github.com/owner/repo.git", false},
+		{"git@github.com:owner/repo.git", false}, // SCP-style has no URL userinfo at all
+	}
+	for _, tc := range cases {
+		if got := remoteHasEmbeddedCredentials(tc.url); got != tc.want {
+			t.Errorf("remoteHasEmbeddedCredentials(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
 func TestEmbedTokenInHTTPSURL(t *testing.T) {
 	cases := []struct {
 		rawURL, user, token, want string

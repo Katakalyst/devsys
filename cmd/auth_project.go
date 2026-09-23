@@ -98,11 +98,14 @@ func runAuthProjectInteractive(projectName string) error {
 			continue
 		}
 		for _, idx := range indices {
-			if err := configureRepo(reader, projectName, &statuses[idx]); err != nil {
+			didChange, err := configureRepo(reader, projectName, &statuses[idx])
+			if err != nil {
 				fmt.Printf("  Error: %v\n", err)
 				continue
 			}
-			changed = true
+			if didChange {
+				changed = true
+			}
 		}
 	}
 
@@ -223,7 +226,13 @@ func parseSelection(input string, max int) ([]int, error) {
 	return indices, nil
 }
 
-func configureRepo(reader *bufio.Reader, projectName string, st *repoAuthStatus) error {
+// configureRepo dispatches on repo state and reports whether it actually
+// changed anything — distinct from erroring, since e.g. opening the
+// already-configured menu and choosing [b] Back is neither an error nor a
+// change, and must not trigger the caller's end-of-session container
+// recreation (Git Remote & Credential Spec §7: recreation is a real
+// interruption, not to be triggered needlessly).
+func configureRepo(reader *bufio.Reader, projectName string, st *repoAuthStatus) (bool, error) {
 	switch {
 	case !st.HasRemote:
 		return configureNoRemote(reader, projectName, st)
@@ -237,15 +246,15 @@ func configureRepo(reader *bufio.Reader, projectName string, st *repoAuthStatus)
 // configureNoRemote runs the create-or-attach wizard for a repo with no
 // remote yet — the only branch that ever writes a remote (Git Remote &
 // Credential Spec §7: "auth never rewrites a remote it didn't create").
-func configureNoRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus) error {
+func configureNoRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus) (bool, error) {
 	fmt.Printf("Configuring %q (no remote):\n", st.Repo.RelPath)
 	platform, err := promptPlatform(reader)
 	if err != nil {
-		return err
+		return false, err
 	}
 	mode, err := promptCreateOrAttach(reader)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	var remoteURL, tokenValue string
@@ -257,20 +266,20 @@ func configureNoRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 		remoteURL, tokenValue, err = setupGitHubRemote(reader, projectName, st, mode)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if err := writeOriginRemote(st.Repo.AbsPath, remoteURL); err != nil {
-		return fmt.Errorf("cannot write remote: %w", err)
+		return false, fmt.Errorf("cannot write remote: %w", err)
 	}
 
 	repoID, err := workspace.RepoIDFromURL(remoteURL)
 	if err != nil {
-		return fmt.Errorf("cannot determine repo id: %w", err)
+		return false, fmt.Errorf("cannot determine repo id: %w", err)
 	}
 	secretName := workspace.SecretName(projectName, repoID, platform)
 	if err := storeRepoSecret(secretName, tokenValue, labels); err != nil {
-		return err
+		return false, err
 	}
 
 	fmt.Printf("  -> remote wired, token stored (%s)\n", secretName)
@@ -280,19 +289,19 @@ func configureNoRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 	st.SecretName = secretName
 	st.HasToken = true
 	st.ExpiresAt = labels["devsys.expires-at"]
-	return nil
+	return true, nil
 }
 
 // configureRemoteNoToken mints/stores a token for a repo whose remote the
 // agent already set itself. Platform is derived from the existing URL; no
 // create/attach question, no remote rewrite (Git Remote & Credential Spec §7/§8).
-func configureRemoteNoToken(reader *bufio.Reader, projectName string, st *repoAuthStatus) error {
+func configureRemoteNoToken(reader *bufio.Reader, projectName string, st *repoAuthStatus) (bool, error) {
 	fmt.Printf("Configuring %q: remote already set -> %s\n", st.Repo.RelPath, st.RemoteURL)
 	fmt.Printf("  Platform: %s (derived from remote)\n", st.Platform)
 
 	repoID, err := workspace.RepoIDFromURL(st.RemoteURL)
 	if err != nil {
-		return fmt.Errorf("cannot determine repo id: %w", err)
+		return false, fmt.Errorf("cannot determine repo id: %w", err)
 	}
 	secretName := workspace.SecretName(projectName, repoID, st.Platform)
 
@@ -304,28 +313,28 @@ func configureRemoteNoToken(reader *bufio.Reader, projectName string, st *repoAu
 	case "github":
 		repoPath, pathErr := workspace.PathFromURL(st.RemoteURL)
 		if pathErr != nil {
-			return fmt.Errorf("cannot determine owner/repo: %w", pathErr)
+			return false, fmt.Errorf("cannot determine owner/repo: %w", pathErr)
 		}
 		tokenValue, err = promptAndVerifyGitHubPAT(reader, repoPath)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if err := storeRepoSecret(secretName, tokenValue, labels); err != nil {
-		return err
+		return false, err
 	}
 	fmt.Printf("  -> token stored (%s)\n", secretName)
 	st.SecretName = secretName
 	st.HasToken = true
 	st.ExpiresAt = labels["devsys.expires-at"]
-	return nil
+	return true, nil
 }
 
 // configureAlreadySet shows the change/rotate/remove/back menu for a fully
 // configured repo (Git Remote & Credential Spec §9) — selecting one is never
-// a no-op or an error.
-func configureAlreadySet(reader *bufio.Reader, projectName string, st *repoAuthStatus) error {
+// a no-op or an error, though only some choices actually change anything.
+func configureAlreadySet(reader *bufio.Reader, projectName string, st *repoAuthStatus) (bool, error) {
 	fmt.Printf("%q is already configured — %s, %s.\n", st.Repo.RelPath, st.Platform, tokenExpiryText(st.ExpiresAt))
 	fmt.Println("  [c] Change platform/target")
 	fmt.Println("  [x] Rotate token (same target, fresh token)")
@@ -343,10 +352,10 @@ func configureAlreadySet(reader *bufio.Reader, projectName string, st *repoAuthS
 	case "r":
 		return removeRepoToken(st)
 	case "b", "":
-		return nil
+		return false, nil
 	default:
 		fmt.Println("  Unrecognized option.")
-		return nil
+		return false, nil
 	}
 }
 
@@ -355,12 +364,12 @@ func configureAlreadySet(reader *bufio.Reader, projectName string, st *repoAuthS
 // explicit, user-requested rewrite. Doesn't conflict with "auth never
 // rewrites a remote it didn't create" (Spec §7): that rule is about auth's
 // own default behavior, not a menu the user deliberately opened (Spec §9).
-func changeRepoTarget(reader *bufio.Reader, projectName string, st *repoAuthStatus) error {
+func changeRepoTarget(reader *bufio.Reader, projectName string, st *repoAuthStatus) (bool, error) {
 	if err := revokeAndDeleteSecret(st); err != nil {
-		return err
+		return false, err
 	}
 	if err := clearOriginRemote(st.Repo.AbsPath); err != nil {
-		return err
+		return false, err
 	}
 	st.HasRemote = false
 	st.HasToken = false
@@ -377,24 +386,29 @@ func changeRepoTarget(reader *bufio.Reader, projectName string, st *repoAuthStat
 // Implementation Plan.md's open question on this — resolved here: prompt
 // for a newly user-created PAT, same as the remote-no-token flow, with a
 // reminder to revoke the old one manually).
-func rotateRepoToken(reader *bufio.Reader, st *repoAuthStatus) error {
+func rotateRepoToken(reader *bufio.Reader, st *repoAuthStatus) (bool, error) {
 	fmt.Printf("This will revoke the current token and mint a fresh one for the same target (%s).\n", st.RemoteURL)
 	if !confirm(reader, "Continue?") {
 		fmt.Println("  Skipped.")
-		return nil
+		return false, nil
 	}
+
+	var tokenValue, userInfo string
+	var labels map[string]string
 
 	switch st.Platform {
 	case "gitlab":
 		if err := revokeGitLabRepoToken(st.RemoteURL); err != nil {
 			fmt.Fprintf(os.Stderr, "  Warning: could not revoke old GitLab token via API: %v\n", err)
 		}
-		tokenValue, labels, err := mintGitLabTokenForRemote(st.RemoteURL)
+		var err error
+		tokenValue, labels, err = mintGitLabTokenForRemote(st.RemoteURL)
 		if err != nil {
-			return err
+			return false, err
 		}
+		userInfo = "oauth2"
 		if err := storeRepoSecret(st.SecretName, tokenValue, labels); err != nil {
-			return err
+			return false, err
 		}
 		st.ExpiresAt = labels["devsys.expires-at"]
 		fmt.Printf("  -> new token minted (expires %s)\n", st.ExpiresAt)
@@ -403,33 +417,65 @@ func rotateRepoToken(reader *bufio.Reader, st *repoAuthStatus) error {
 		fmt.Println("  Remember to revoke the old PAT yourself at github.com/settings/tokens once the new one is confirmed working.")
 		repoPath, err := workspace.PathFromURL(st.RemoteURL)
 		if err != nil {
-			return fmt.Errorf("cannot determine owner/repo: %w", err)
+			return false, fmt.Errorf("cannot determine owner/repo: %w", err)
 		}
-		tokenValue, err := promptAndVerifyGitHubPAT(reader, repoPath)
+		tokenValue, err = promptAndVerifyGitHubPAT(reader, repoPath)
 		if err != nil {
-			return err
+			return false, err
 		}
+		userInfo = "x-access-token"
 		if err := storeRepoSecret(st.SecretName, tokenValue, nil); err != nil {
-			return err
+			return false, err
 		}
 		st.ExpiresAt = ""
 		fmt.Println("  -> new token stored")
 	}
 	st.HasToken = true
-	return nil
+
+	// If the remote's URL has the old token embedded (the case whenever auth
+	// itself wrote it), plain `git push`/`pull` breaks silently the moment
+	// the old token is revoked unless the URL is rewritten too (Git Remote &
+	// Credential Spec §9's explicit "real mechanical detail" for rotate). A
+	// remote auth didn't write (no embedded userinfo) is left untouched,
+	// consistent with auth never rewriting a remote it didn't create.
+	if remoteHasEmbeddedCredentials(st.RemoteURL) {
+		newRemoteURL, err := embedTokenInHTTPSURL(st.RemoteURL, userInfo, tokenValue)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not rewrite remote URL with the new token: %v\n", err)
+		} else if err := writeOriginRemote(st.Repo.AbsPath, newRemoteURL); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not update the remote with the new token: %v\n", err)
+		} else {
+			st.RemoteURL = newRemoteURL
+			fmt.Println("  -> remote URL updated with the new token")
+		}
+	}
+	return true, nil
+}
+
+// remoteHasEmbeddedCredentials reports whether remoteURL already carries
+// userinfo (user:token@host) — the signal that auth itself wrote this URL
+// (setupGitLabRemote/setupGitHubRemote always embed a token), as opposed to
+// a bare URL the agent set itself via plain `git remote add`, which auth
+// never rewrites.
+func remoteHasEmbeddedCredentials(remoteURL string) bool {
+	u, err := url.Parse(remoteURL)
+	if err != nil {
+		return false
+	}
+	return u.User != nil
 }
 
 // removeRepoToken is the [r] menu option: revoke and unmount, remote left
 // as-is (R12.5).
-func removeRepoToken(st *repoAuthStatus) error {
+func removeRepoToken(st *repoAuthStatus) (bool, error) {
 	if err := revokeAndDeleteSecret(st); err != nil {
-		return err
+		return false, err
 	}
 	st.HasToken = false
 	st.SecretName = ""
 	st.ExpiresAt = ""
 	fmt.Println("  -> token removed, remote left as-is")
-	return nil
+	return true, nil
 }
 
 func revokeAndDeleteSecret(st *repoAuthStatus) error {
