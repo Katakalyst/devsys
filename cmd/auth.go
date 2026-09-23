@@ -16,15 +16,19 @@ import (
 // authCmd groups every credential-provisioning command that used to be
 // bundled, one-shot, inside `devsys setup`. Splitting these out makes each
 // one independently rerunnable — most importantly for Claude/Codex, where
-// there was previously no way back into the shared auth volume once it had
-// been seeded once (e.g. to switch from a subscription login to an API key,
-// or to reauthenticate after a logout).
+// there was previously no way back into the auth volume once it had been
+// seeded once (e.g. to switch from a subscription login to an API key, or to
+// reauthenticate after a logout). Claude/Codex credentials are per-project
+// (documents/TODO.md's per-project agent credential item), not shared across
+// every project on the machine — each project can run a different
+// subscription/API key and a different billing boundary.
 var authCmd = &cobra.Command{
 	Use:   "auth",
-	Short: "Manage shared Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials",
-	Long: `Manage shared Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials.
+	Short: "Manage per-project Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials",
+	Long: `Manage per-project Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials.
 
-  devsys auth claude|codex|gitlab|github [--force]            bootstrap subcommands, above
+  devsys auth claude|codex <project> [--force]                seed/reseed that project's own Claude/Codex volume
+  devsys auth gitlab|github [--force]                          bootstrap subcommands (machine-wide, unlike claude/codex above)
   devsys auth <project>                                       interactive per-repo credential listing for a project
   devsys auth <project> [repo] [remote] [platform] --create [--name <name>] [--force]
   devsys auth <project> [repo] [remote] [platform] --attach <owner/repo-or-url> [--force]
@@ -51,27 +55,39 @@ var authGitLabForce bool
 var authGitHubForce bool
 
 var authClaudeCmd = &cobra.Command{
-	Use:   "claude",
-	Short: "Seed or reseed the shared Claude Code credential volume",
+	Use:   "claude <project>",
+	Short: "Seed or reseed a project's own Claude Code credential volume",
+	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("cannot determine home directory: %w", err)
 		}
-		return authSeedAgentVolume("devsys-claude-auth", filepath.Join(home, ".claude"), authClaudeForce)
+		return authSeedAgentVolume(agentAuthVolumeName(args[0], "claude"), filepath.Join(home, ".claude"), authClaudeForce)
 	},
 }
 
 var authCodexCmd = &cobra.Command{
-	Use:   "codex",
-	Short: "Seed or reseed the shared Codex credential volume",
+	Use:   "codex <project>",
+	Short: "Seed or reseed a project's own Codex credential volume",
+	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("cannot determine home directory: %w", err)
 		}
-		return authSeedAgentVolume("devsys-codex-auth", filepath.Join(home, ".codex"), authCodexForce)
+		return authSeedAgentVolume(agentAuthVolumeName(args[0], "codex"), filepath.Join(home, ".codex"), authCodexForce)
 	},
+}
+
+// agentAuthVolumeName builds a project's own Claude/Codex credential volume
+// name — devsys-<project>-<agent>-auth. Each project has its own login
+// (subscription vs. API key, different billing boundaries), not one shared
+// machine-wide volume: same per-project naming principle already used for
+// devsys-<project>-<repo-id>-<platform>-token and
+// devsys-<project>-trivy-db (documents/TODO.md).
+func agentAuthVolumeName(projectName, agent string) string {
+	return fmt.Sprintf("devsys-%s-%s-auth", projectName, agent)
 }
 
 var authGitLabCmd = &cobra.Command{

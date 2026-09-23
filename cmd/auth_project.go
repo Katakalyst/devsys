@@ -1515,10 +1515,17 @@ func recreateContainerForAuth(projectName string, interactive bool) error {
 // with more than one per-repo token would otherwise hit (Git Remote &
 // Credential Spec §7's multi-token fix). Used by this file's own
 // recreateContainerForAuth, plus cmd/init.go and cmd/rebuild.go.
+//
+// Claude/Codex auth volumes are per-project (devsys-<project>-claude-auth/
+// -codex-auth, documents/TODO.md), same as the trivy DB volume already was —
+// not the single machine-wide devsys-claude-auth/devsys-codex-auth every
+// project used to share.
 func createProjectContainerWithRepoSecrets(containerName, projectName, projectPath, imageTag string) error {
+	claudeVolume := agentAuthVolumeName(projectName, "claude")
+	codexVolume := agentAuthVolumeName(projectName, "codex")
 	trivyVolume := fmt.Sprintf("devsys-%s-trivy-db", projectName)
 
-	for _, vol := range []string{"devsys-claude-auth", "devsys-codex-auth", trivyVolume} {
+	for _, vol := range []string{claudeVolume, codexVolume, trivyVolume} {
 		if !podman.VolumeExists(vol) {
 			if _, err := podman.RunPodman("volume", "create", "--label", "devsys=true", vol); err != nil {
 				return fmt.Errorf("cannot create volume %s: %w", vol, err)
@@ -1531,8 +1538,8 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 		"--name", containerName,
 		"--label", "devsys=true",
 		"--volume", projectPath + ":" + defaultWorkspaceDest + ":Z",
-		"--volume", "devsys-claude-auth:/root/.claude",
-		"--volume", "devsys-codex-auth:/root/.codex",
+		"--volume", claudeVolume + ":/root/.claude",
+		"--volume", codexVolume + ":/root/.codex",
 		"--volume", trivyVolume + ":/root/.cache/trivy",
 		"--env", "CLAUDE_CONFIG_DIR=/root/.claude",
 		"--env", "CODEX_HOME=/root/.codex",

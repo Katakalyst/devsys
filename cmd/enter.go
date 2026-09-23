@@ -40,8 +40,8 @@ func runEnter(cmd *cobra.Command, args []string) error {
 	// (cmd/root.go's PersistentPostRun), not specifically here.
 	checkTokenExpiry(projectName)
 	checkStaleness(projectName)
-	checkAgentAuth("claude")
-	checkAgentAuth("codex")
+	checkAgentAuth(projectName, "claude")
+	checkAgentAuth(projectName, "codex")
 
 	// Open a bash shell interactively.
 	shellErr := podman.ExecInteractive(containerName, "bash")
@@ -127,21 +127,22 @@ func warnIfBaseImageOutdated(projectName string) {
 }
 
 // checkAgentAuth warns, throttled the same way as the staleness/expiry
-// checks above, if the shared Claude or Codex credential volume has never
-// actually been authenticated (Podman auto-creates the volume empty on
-// first container mount, so its mere existence isn't enough signal — see
-// volumeHasContent in cmd/auth.go). Machine-level, not per-project, but
-// checked here since 'devsys enter' is the routine entry point where it's
-// actually useful to notice.
-func checkAgentAuth(agent string) {
-	cacheKey := agent + "-auth"
+// checks above, if this project's own Claude or Codex credential volume has
+// never actually been authenticated (Podman auto-creates the volume empty
+// on first container mount, so its mere existence isn't enough signal — see
+// volumeHasContent in cmd/auth.go). Per-project, not machine-level
+// (documents/TODO.md's per-project agent credential item) — checked here
+// since 'devsys enter' is the routine entry point where it's actually
+// useful to notice.
+func checkAgentAuth(projectName, agent string) {
+	cacheKey := projectName + "-" + agent + "-auth"
 	if checkThrottled(cacheKey) {
 		return
 	}
-	volumeName := fmt.Sprintf("devsys-%s-auth", agent)
+	volumeName := agentAuthVolumeName(projectName, agent)
 	authed := podman.VolumeExists(volumeName) && volumeHasContent(volumeName)
 	if !authed {
-		fmt.Fprintf(os.Stderr, "Warning: no %s auth set. Run 'devsys auth %s', or log in from inside this session.\n", agent, agent)
+		fmt.Fprintf(os.Stderr, "Warning: no %s auth set for '%s'. Run 'devsys auth %s %s', or log in from inside this session.\n", agent, projectName, agent, projectName)
 	}
 	markChecked(cacheKey)
 }

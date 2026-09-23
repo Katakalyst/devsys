@@ -52,13 +52,28 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check 4: Claude/Codex auth volumes actually hold credentials, not just
-	// exist — a volume can exist empty (e.g. auto-created by
-	// createProjectContainerWithRepoSecrets) without ever having been authenticated.
-	claudeAuthed := podman.VolumeExists("devsys-claude-auth") && volumeHasContent("devsys-claude-auth")
-	check("Claude Code auth", claudeAuthed, "run 'devsys auth claude', or log in from inside 'devsys enter'")
-	codexAuthed := podman.VolumeExists("devsys-codex-auth") && volumeHasContent("devsys-codex-auth")
-	check("Codex auth", codexAuthed, "run 'devsys auth codex', or log in from inside 'devsys enter'")
+	// Check 4: each project's own Claude/Codex auth volumes actually hold
+	// credentials, not just exist — a volume can exist empty (e.g.
+	// auto-created by createProjectContainerWithRepoSecrets) without ever
+	// having been authenticated. Per-project (documents/TODO.md's
+	// per-project agent credential item), so this iterates every discovered
+	// project rather than checking one machine-wide pair of volumes.
+	containers, err := podman.ListDevsysContainers()
+	if err != nil {
+		check("Claude/Codex auth", false, fmt.Sprintf("cannot list projects: %v", err))
+	} else if len(containers) == 0 {
+		fmt.Println("  [--]   Claude/Codex auth: no projects yet")
+	} else {
+		for _, c := range containers {
+			projectName := containerToProject(containerField(c, "Names"))
+			for _, agent := range []string{"claude", "codex"} {
+				volumeName := agentAuthVolumeName(projectName, agent)
+				authed := podman.VolumeExists(volumeName) && volumeHasContent(volumeName)
+				check(fmt.Sprintf("%s auth (%s)", agent, projectName), authed,
+					fmt.Sprintf("run 'devsys auth %s %s', or log in from inside 'devsys enter %s'", agent, projectName, projectName))
+			}
+		}
+	}
 
 	// Check 5: devsys-base's registry location is reachable and publishes at
 	// least one discoverable version. devsysBaseImage has no tag (Section

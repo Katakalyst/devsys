@@ -22,6 +22,8 @@ func runRm(cmd *cobra.Command, args []string) error {
 	containerName := fmt.Sprintf("devsys-%s", projectName)
 	legacySecretName := fmt.Sprintf("devsys-%s-gitlab-token", projectName)
 	trivyVolume := fmt.Sprintf("devsys-%s-trivy-db", projectName)
+	claudeVolume := agentAuthVolumeName(projectName, "claude")
+	codexVolume := agentAuthVolumeName(projectName, "codex")
 
 	reader := bufio.NewReader(os.Stdin)
 
@@ -70,19 +72,23 @@ func runRm(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 3: Remove trivy-db volume.
-	if podman.VolumeExists(trivyVolume) {
-		if !confirm(reader, fmt.Sprintf("Remove volume %s?", trivyVolume)) {
-			fmt.Println("Skipping volume removal.")
-		} else {
-			if _, err := podman.RunPodman("volume", "rm", trivyVolume); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: cannot remove volume: %v\n", err)
-			} else {
-				fmt.Printf("  Volume %s removed.\n", trivyVolume)
-			}
+	// Step 3: Remove this project's own volumes — trivy-db, plus its Claude
+	// and Codex auth volumes (per-project, not shared across other projects
+	// on the machine, so removing them here only affects this one).
+	for _, vol := range []string{trivyVolume, claudeVolume, codexVolume} {
+		if !podman.VolumeExists(vol) {
+			fmt.Printf("Volume %s not found — skipping.\n", vol)
+			continue
 		}
-	} else {
-		fmt.Printf("Volume %s not found — skipping.\n", trivyVolume)
+		if !confirm(reader, fmt.Sprintf("Remove volume %s?", vol)) {
+			fmt.Println("Skipping volume removal.")
+			continue
+		}
+		if _, err := podman.RunPodman("volume", "rm", vol); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot remove volume: %v\n", err)
+		} else {
+			fmt.Printf("  Volume %s removed.\n", vol)
+		}
 	}
 
 	// Step 4: Discover this project's actual per-repo, per-remote git

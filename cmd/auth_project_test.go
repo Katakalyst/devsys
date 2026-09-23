@@ -177,6 +177,55 @@ func TestRepoDefaultName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// agentAuthVolumeName / createProjectContainerWithRepoSecrets — per-project
+// Claude/Codex credential volumes (documents/TODO.md's per-project agent
+// credential item), replacing the single machine-wide devsys-claude-auth/
+// devsys-codex-auth every project used to share.
+// ---------------------------------------------------------------------------
+
+func TestAgentAuthVolumeName(t *testing.T) {
+	cases := []struct {
+		project, agent, want string
+	}{
+		{"myproject", "claude", "devsys-myproject-claude-auth"},
+		{"myproject", "codex", "devsys-myproject-codex-auth"},
+		{"foo-bar", "claude", "devsys-foo-bar-claude-auth"},
+	}
+	for _, tc := range cases {
+		got := agentAuthVolumeName(tc.project, tc.agent)
+		if got != tc.want {
+			t.Errorf("agentAuthVolumeName(%q, %q) = %q, want %q", tc.project, tc.agent, got, tc.want)
+		}
+	}
+}
+
+func TestCreateProjectContainerWithRepoSecrets_MountsPerProjectAgentVolumes(t *testing.T) {
+	root := t.TempDir()
+	rec := podmanfake.Install(t, podmanfake.Options{})
+
+	if err := createProjectContainerWithRepoSecrets("devsys-foo", "foo", root, "devsys-foo"); err != nil {
+		t.Fatalf("createProjectContainerWithRepoSecrets: %v", err)
+	}
+
+	for _, vol := range []string{"devsys-foo-claude-auth", "devsys-foo-codex-auth", "devsys-foo-trivy-db"} {
+		if !rec.HasCall("volume", "create", vol) {
+			t.Errorf("expected podman volume create for %s; calls: %v", vol, rec.Calls())
+		}
+	}
+	if !rec.HasCall("create", "--volume", "devsys-foo-claude-auth:/root/.claude") {
+		t.Error("expected container create to mount devsys-foo-claude-auth at /root/.claude")
+	}
+	if !rec.HasCall("create", "--volume", "devsys-foo-codex-auth:/root/.codex") {
+		t.Error("expected container create to mount devsys-foo-codex-auth at /root/.codex")
+	}
+	// A second project must get its own, distinctly-named volumes — never
+	// the shared machine-wide names this replaces.
+	if rec.HasCall("volume", "create", "devsys-claude-auth") || rec.HasCall("volume", "create", "devsys-codex-auth") {
+		t.Error("must not create the old machine-wide devsys-claude-auth/devsys-codex-auth volumes")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // embedTokenInHTTPSURL — both platforms now use this identically (Git
 // Remote & Credential Spec §7's corrected GitHub decision).
 // ---------------------------------------------------------------------------
