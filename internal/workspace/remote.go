@@ -75,19 +75,40 @@ func (r Repo) Remotes() ([]Remote, error) {
 	return result, nil
 }
 
+// githubHosts is the set of hostnames recognised as GitHub (or GitHub
+// Enterprise Server) instances. Always contains "github.com"; extended at
+// startup via RegisterGitHubHost when a self-hosted GHE instance is
+// configured (see cmd/auth.go's loadGitHubHostFromBootstrap).
+var githubHosts = map[string]bool{"github.com": true}
+
+// RegisterGitHubHost marks host as a GitHub Enterprise Server instance so
+// that PlatformFromURL correctly identifies its repos as "github" rather than
+// "gitlab". Call once per self-hosted GHE hostname before any URL
+// classification. Idempotent and case-insensitive.
+func RegisterGitHubHost(host string) {
+	githubHosts[strings.ToLower(host)] = true
+}
+
+// DeregisterGitHubHost removes host from the registered GitHub host set.
+// Only intended for use in tests — production code never removes hosts.
+func DeregisterGitHubHost(host string) {
+	delete(githubHosts, strings.ToLower(host))
+}
+
 // PlatformFromURL derives the platform name ("github" or "gitlab") from a
 // remote URL. The derivation is from the URL alone — nothing is cached or
 // stored separately (R3).
 //
-// Rule: if the URL's host is github.com, the platform is "github"; everything
-// else is treated as "gitlab" (covers gitlab.com and self-hosted GitLab
-// instances). GitHub Enterprise is not yet supported (see documents/TODO.md).
+// Rule: if the URL's host is github.com or any host registered via
+// RegisterGitHubHost (for GitHub Enterprise Server instances), the platform
+// is "github"; everything else is treated as "gitlab" (covers gitlab.com and
+// self-hosted GitLab instances).
 func PlatformFromURL(remoteURL string) (string, error) {
 	host, err := hostFromRemoteURL(remoteURL)
 	if err != nil {
 		return "", fmt.Errorf("cannot determine platform: %w", err)
 	}
-	if host == "github.com" {
+	if githubHosts[host] {
 		return "github", nil
 	}
 	return "gitlab", nil

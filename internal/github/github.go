@@ -12,6 +12,17 @@ import (
 
 const defaultAPIBase = "https://api.github.com"
 
+// APIBaseForHost returns the REST API base URL for a GitHub host.
+// For github.com this is the standard https://api.github.com.
+// For GitHub Enterprise Server instances it is https://<host>/api/v3
+// (the fixed prefix used by all GHES versions).
+func APIBaseForHost(host string) string {
+	if host == "" || host == "github.com" {
+		return defaultAPIBase
+	}
+	return "https://" + host + "/api/v3"
+}
+
 // Client is a minimal GitHub REST API client.
 type Client struct {
 	apiBase    string
@@ -23,9 +34,8 @@ type Client struct {
 	DryRun bool
 }
 
-// NewClient creates a GitHub client using the given PAT.
-// GitHub's API base URL is fixed — self-hosted GitHub Enterprise is not
-// supported here (unlike GitLab, where the base URL is configurable).
+// NewClient creates a GitHub client using the given PAT against github.com.
+// For GitHub Enterprise Server use NewClientWithBase(APIBaseForHost(host), token).
 func NewClient(token string) *Client {
 	return NewClientWithBase(defaultAPIBase, token)
 }

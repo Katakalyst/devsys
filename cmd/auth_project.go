@@ -875,7 +875,7 @@ func rotateRepoToken(reader *bufio.Reader, st *repoAuthStatus) (bool, error) {
 			return false, fmt.Errorf("cannot determine owner/repo: %w", err)
 		}
 		fmt.Println("  GitHub fine-grained PATs can't be rotated via API — create a new one, then paste it below.")
-		fmt.Printf("  Once the new one is confirmed working, revoke the old PAT for %s yourself: %s\n", repoPath, githubTokensBetaURL)
+		fmt.Printf("  Once the new one is confirmed working, revoke the old PAT for %s yourself: %s\n", repoPath, githubTokensPageURL())
 		tokenValue, labels, err = promptAndVerifyGitHubPAT(reader, repoPath)
 		if err != nil {
 			return false, err
@@ -952,26 +952,35 @@ func revokeAndDeleteSecret(st *repoAuthStatus) error {
 	return nil
 }
 
-// githubTokensBetaURL is GitHub's fine-grained token list — the list devsys
-// actually needs, every time it points a user at github.com to manage one of
-// these by hand. A bare github.com/settings/tokens is GitHub's *classic*
-// token list, the wrong one for anything devsys mounts (Git Remote &
-// Credential Spec §7: GitHub credentials are always fine-grained PATs).
-const githubTokensBetaURL = "github.com/settings/tokens?type=beta"
+// githubHost returns the hostname of the configured GitHub instance —
+// "github.com" for standard GitHub, or the GHE hostname when authGitHubURL
+// has been set to a self-hosted instance via --github-url or loaded from the
+// bootstrap secret by loadGitHubHostFromBootstrap.
+func githubHost() string {
+	return githubHostFromURL(authGitHubURL)
+}
+
+// githubTokensPageURL returns the fine-grained token management page URL for
+// the configured GitHub instance — github.com/settings/tokens?type=beta for
+// standard GitHub, or <ghe-host>/settings/tokens?type=beta for GHE (GHES
+// uses the same path under its own hostname).
+func githubTokensPageURL() string {
+	return githubHost() + "/settings/tokens?type=beta"
+}
 
 // githubManualRevokeReminder formats the standard reminder shown wherever a
 // GitHub fine-grained PAT is replaced or removed. devsys never mints these
 // (user-created, pasted into `--attach`), so it has no API to revoke them
 // either, and GitHub never hands back an ID devsys could deep-link to
 // directly — the best it can do is name the exact repo the token was scoped
-// to, which is what a fine-grained token's own row on githubTokensBetaURL's
+// to, which is what a fine-grained token's own row on githubTokensPageURL's
 // list shows, so the user can pick out the right one without guessing by name.
 func githubManualRevokeReminder(remoteURL string) string {
 	ownerRepo, err := workspace.PathFromURL(remoteURL)
 	if err != nil {
-		return "  Remember to revoke the old fine-grained PAT yourself: " + githubTokensBetaURL
+		return "  Remember to revoke the old fine-grained PAT yourself: " + githubTokensPageURL()
 	}
-	return fmt.Sprintf("  Remember to revoke the old fine-grained PAT for %s yourself: %s", ownerRepo, githubTokensBetaURL)
+	return fmt.Sprintf("  Remember to revoke the old fine-grained PAT for %s yourself: %s", ownerRepo, githubTokensPageURL())
 }
 
 // --- Prompts ---------------------------------------------------------------
@@ -1018,7 +1027,7 @@ func promptCreateOrAttach(reader *bufio.Reader) (string, error) {
 // certain) start working for GitHub too, instead of always silently
 // showing "token ok" regardless of how close the real expiry actually is.
 func promptAndVerifyGitHubPAT(reader *bufio.Reader, ownerRepo string) (token string, labels map[string]string, err error) {
-	fmt.Printf("  Create a fine-grained PAT scoped to %s at %s\n", ownerRepo, githubTokensBetaURL)
+	fmt.Printf("  Create a fine-grained PAT scoped to %s at %s\n", ownerRepo, githubTokensPageURL())
 	fmt.Println("  Repository permissions needed (Metadata: Read-only is auto-selected with these):")
 	fmt.Println("    Contents:      Read and write  (git push/pull, releases, tags)")
 	fmt.Println("    Issues:        Read and write  (issues, comments, milestones)")
@@ -1090,12 +1099,13 @@ func githubExpiresAtLabels(expiresAt string) (map[string]string, error) {
 // the shared core of promptAndVerifyGitHubPAT (interactive) and the
 // scriptable GitHub paths, which get the PAT from --token instead of a
 // prompt but still need the same verification (Spec §9's error cases).
+// Uses the configured GitHub instance (github.com or GHE) via authGitHubURL.
 func verifyGitHubPAT(ownerRepo, token string) error {
 	owner, repo, ok := strings.Cut(ownerRepo, "/")
 	if !ok {
 		return fmt.Errorf("expected owner/repo, got %q", ownerRepo)
 	}
-	return github.NewClient(token).GetRepo(owner, repo)
+	return github.NewClientWithBase(github.APIBaseForHost(githubHost()), token).GetRepo(owner, repo)
 }
 
 // --- GitLab-specific setup --------------------------------------------------
@@ -1284,13 +1294,14 @@ func revokeGitLabRepoToken(remoteURL string) error {
 
 // githubBootstrapClient builds a GitHub client from the bootstrap PAT —
 // used only for --create's repo-creation step (Spec §7: "For --attach, no
-// bootstrap PAT is needed").
+// bootstrap PAT is needed"). Uses the configured GitHub instance (github.com
+// or GHE) via authGitHubURL.
 func githubBootstrapClient() (*github.Client, error) {
 	bootstrapPAT, err := podman.GetSecretValue("devsys-bootstrap-github-token")
 	if err != nil {
 		return nil, fmt.Errorf("cannot read bootstrap GitHub PAT (run 'devsys auth github' first): %w", err)
 	}
-	return github.NewClient(bootstrapPAT), nil
+	return github.NewClientWithBase(github.APIBaseForHost(githubHost()), bootstrapPAT), nil
 }
 
 func setupGitHubRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus, mode string) (remoteURL, tokenValue string, labels map[string]string, err error) {
@@ -1312,7 +1323,7 @@ func setupGitHubRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 		if err != nil {
 			return "", "", nil, fmt.Errorf("cannot create GitHub repo: %w", err)
 		}
-		fmt.Printf("  -> created https://github.com/%s\n", fullName)
+		fmt.Printf("  -> created %s/%s\n", strings.TrimRight(authGitHubURL, "/"), fullName)
 		ownerRepo = fullName
 	} else {
 		fmt.Print("  owner/repo: ")
@@ -1327,7 +1338,7 @@ func setupGitHubRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 	if err != nil {
 		return "", "", nil, err
 	}
-	remoteURL, err = embedTokenInHTTPSURL("https://github.com/"+ownerRepo, "x-access-token", tokenValue)
+	remoteURL, err = embedTokenInHTTPSURL(strings.TrimRight(authGitHubURL, "/")+"/"+ownerRepo, "x-access-token", tokenValue)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("cannot build remote URL: %w", err)
 	}
@@ -1372,7 +1383,7 @@ func setupGitHubRemoteScriptable(projectName string, st *repoAuthStatus, mode, n
 	if err != nil {
 		return "", "", nil, err
 	}
-	remoteURL, err = embedTokenInHTTPSURL("https://github.com/"+ownerRepo, "x-access-token", token)
+	remoteURL, err = embedTokenInHTTPSURL(strings.TrimRight(authGitHubURL, "/")+"/"+ownerRepo, "x-access-token", token)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("cannot build remote URL: %w", err)
 	}

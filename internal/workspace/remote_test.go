@@ -54,6 +54,38 @@ func TestPlatformFromURL(t *testing.T) {
 	}
 }
 
+// TestPlatformFromURL_GHE verifies that a self-hosted GitHub Enterprise Server
+// host is recognised as "github" after RegisterGitHubHost, and reverts to
+// "gitlab" after DeregisterGitHubHost (cleanup).
+func TestPlatformFromURL_GHE(t *testing.T) {
+	const gheHost = "ghe.mycompany.com"
+	workspace.RegisterGitHubHost(gheHost)
+	t.Cleanup(func() { workspace.DeregisterGitHubHost(gheHost) })
+
+	cases := []struct {
+		url  string
+		want string
+	}{
+		{"https://ghe.mycompany.com/owner/repo.git", "github"},
+		{"git@ghe.mycompany.com:owner/repo.git", "github"},
+		{"https://x-access-token:TOKEN@ghe.mycompany.com/owner/repo.git", "github"},
+		// Unrelated host still goes to gitlab.
+		{"https://other.example.com/owner/repo.git", "gitlab"},
+		// github.com still works.
+		{"https://github.com/owner/repo.git", "github"},
+	}
+	for _, tc := range cases {
+		got, err := workspace.PlatformFromURL(tc.url)
+		if err != nil {
+			t.Errorf("PlatformFromURL(%q): unexpected error: %v", tc.url, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("PlatformFromURL(%q): want %q, got %q", tc.url, tc.want, got)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // RepoIDFromURL
 // ---------------------------------------------------------------------------

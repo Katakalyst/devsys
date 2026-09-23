@@ -3,12 +3,14 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/katakalyst/devsys/internal/podman"
 	"github.com/katakalyst/devsys/internal/registry"
+	"github.com/katakalyst/devsys/internal/workspace"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -53,6 +55,13 @@ var authClaudeForce bool
 var authCodexForce bool
 var authGitLabForce bool
 var authGitHubForce bool
+
+// authGitHubURL is the base URL used for all GitHub API operations and remote
+// URL construction. Defaults to https://github.com; set to a GHE instance URL
+// via --github-url on `devsys auth github` (stored as a secret label so
+// subsequent commands pick it up automatically) or on `devsys auth <project>`
+// for per-invocation override. Populated at startup by loadGitHubHostFromBootstrap.
+var authGitHubURL = "https://github.com"
 
 var authClaudeCmd = &cobra.Command{
 	Use:   "claude <project>",
@@ -107,6 +116,14 @@ func init() {
 	authCodexCmd.Flags().BoolVar(&authCodexForce, "force", false, "Reseed even if the volume already has credentials, overwriting them")
 	authGitLabCmd.Flags().BoolVar(&authGitLabForce, "force", false, "Replace the existing bootstrap PAT secret")
 	authGitHubCmd.Flags().BoolVar(&authGitHubForce, "force", false, "Replace the existing bootstrap PAT secret")
+	// --github-url is a PersistentFlag on authCmd so it is available to all
+	// auth subcommands — in particular `auth github` (to store the GHE URL
+	// as a secret label) and `auth <project>` (to use it for API/remote ops).
+	// Note: cobra only calls the innermost PersistentPreRun in the chain; if a
+	// subcommand ever adds its own PersistentPreRun it must call
+	// loadGitHubHostFromBootstrap() itself.
+	authCmd.PersistentFlags().StringVar(&authGitHubURL, "github-url", "https://github.com",
+		"GitHub base URL for repo operations (self-hosted GHE supported; stored when passed to 'auth github')")
 	authCmd.Flags().StringVar(&authGitLabURL, "gitlab-url", "https://gitlab.com",
 		"GitLab base URL to create/attach repos against (self-hosted instances supported)")
 	authCmd.Flags().BoolVar(&authScriptCreate, "create", false, "Create a new platform repo for the given/only repo and wire it (scriptable)")
@@ -223,6 +240,44 @@ func volumeHasContent(volumeName string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
+// loadGitHubHostFromBootstrap reads the GitHub base URL stored as a label on
+// the bootstrap PAT secret (written there by `devsys auth github --github-url`)
+// and applies it to authGitHubURL if the flag was not explicitly overridden,
+// then registers the resolved host with workspace so PlatformFromURL
+// classifies GHE remote URLs correctly everywhere (init, rebuild, enter, auth).
+//
+// Called from rootCmd.PersistentPreRun — runs before every command.
+// Silently skips when the bootstrap secret doesn't exist yet.
+func loadGitHubHostFromBootstrap() {
+	labels, err := podman.GetSecretLabels("devsys-bootstrap-github-token")
+	if err != nil {
+		return // secret not set yet, or podman unavailable — skip
+	}
+	storedURL := labels["devsys.github-url"]
+	if storedURL == "" {
+		return
+	}
+	// Apply only when the flag was left at its default value; an explicit
+	// --github-url flag on the command line always takes precedence.
+	if authGitHubURL == "https://github.com" {
+		authGitHubURL = storedURL
+	}
+	// Register whatever host won — a no-op for github.com (already in the set).
+	if h := githubHostFromURL(authGitHubURL); h != "github.com" {
+		workspace.RegisterGitHubHost(h)
+	}
+}
+
+// githubHostFromURL extracts the hostname from a GitHub base URL.
+// Returns "github.com" on any parse failure.
+func githubHostFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "github.com"
+	}
+	return strings.ToLower(u.Hostname())
+}
+
 func runAuthGitHub(cmd *cobra.Command, args []string) error {
 	const bootstrapSecretName = "devsys-bootstrap-github-token"
 
@@ -248,7 +303,13 @@ func runAuthGitHub(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("bootstrap PAT cannot be empty")
 	}
 
-	labels := map[string]string{"devsys": "true"}
+	// Store the configured GitHub URL as a label so every subsequent devsys
+	// command can load the GHE host automatically via loadGitHubHostFromBootstrap,
+	// without requiring --github-url on every invocation.
+	labels := map[string]string{
+		"devsys":            "true",
+		"devsys.github-url": authGitHubURL,
+	}
 	if err := podman.CreateSecretFromStdin(bootstrapSecretName, pat, labels); err != nil {
 		return fmt.Errorf("cannot store bootstrap PAT: %w", err)
 	}

@@ -67,6 +67,28 @@ func TestCreateRepo_HTTPError(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// APIBaseForHost
+// ---------------------------------------------------------------------------
+
+func TestAPIBaseForHost(t *testing.T) {
+	cases := []struct {
+		host string
+		want string
+	}{
+		{"github.com", "https://api.github.com"},
+		{"", "https://api.github.com"},
+		{"ghe.mycompany.com", "https://ghe.mycompany.com/api/v3"},
+		{"github.example.org", "https://github.example.org/api/v3"},
+	}
+	for _, tc := range cases {
+		got := github.APIBaseForHost(tc.host)
+		if got != tc.want {
+			t.Errorf("APIBaseForHost(%q): want %q, got %q", tc.host, tc.want, got)
+		}
+	}
+}
+
 func TestCreateRepo_DryRun(t *testing.T) {
 	calls := 0
 	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
