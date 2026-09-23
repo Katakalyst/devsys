@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -36,6 +37,42 @@ func (r Repo) OriginURL() (string, error) {
 		return "", ErrNoOrigin
 	}
 	return urls[0], nil
+}
+
+// Remote is one named remote on a repo, as read from .git/config.
+type Remote struct {
+	Name string
+	URL  string
+}
+
+// Remotes reads every remote configured on the repo — not just "origin" —
+// sorted by name for deterministic listing/iteration order. Used by
+// discovery/auth to enumerate all of a repo's remotes (Git Remote &
+// Credential Spec §7's multi-remote decision), where OriginURL alone only
+// ever covers the single-remote case.
+//
+// A remote with no URLs configured is skipped (nothing meaningful to derive
+// a platform/repo-id from). Like OriginURL, this is a purely local read —
+// no network call (R3).
+func (r Repo) Remotes() ([]Remote, error) {
+	repo, err := gogit.PlainOpen(r.AbsPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open git repository at %s: %w", r.AbsPath, err)
+	}
+	remotes, err := repo.Remotes()
+	if err != nil {
+		return nil, fmt.Errorf("cannot read remotes: %w", err)
+	}
+	var result []Remote
+	for _, rem := range remotes {
+		urls := rem.Config().URLs
+		if len(urls) == 0 {
+			continue
+		}
+		result = append(result, Remote{Name: rem.Config().Name, URL: urls[0]})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result, nil
 }
 
 // PlatformFromURL derives the platform name ("github" or "gitlab") from a

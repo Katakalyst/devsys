@@ -233,3 +233,66 @@ func TestOriginURL_NotARepo(t *testing.T) {
 		t.Fatal("expected error for non-repo directory, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Repo.Remotes
+// ---------------------------------------------------------------------------
+
+func TestRemotes_NoRemotes(t *testing.T) {
+	r := initRepoWithRemote(t, "") // no remote set
+	got, err := r.Remotes()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("want no remotes, got %v", got)
+	}
+}
+
+func TestRemotes_SingleOrigin(t *testing.T) {
+	const wantURL = "https://gitlab.com/owner/project.git"
+	r := initRepoWithRemote(t, wantURL)
+
+	got, err := r.Remotes()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "origin" || got[0].URL != wantURL {
+		t.Errorf("want [{origin %s}], got %v", wantURL, got)
+	}
+}
+
+func TestRemotes_MultipleSortedByName(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	cfg, _ := repo.Config()
+	cfg.Remotes["upstream"] = &gitconfig.RemoteConfig{Name: "upstream", URLs: []string{"https://gitlab.com/upstream/project.git"}}
+	cfg.Remotes["origin"] = &gitconfig.RemoteConfig{Name: "origin", URLs: []string{"https://github.com/owner/project.git"}}
+	if err := repo.SetConfig(cfg); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+	r := workspace.Repo{AbsPath: dir, RelPath: "."}
+
+	got, err := r.Remotes()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 remotes, got %d: %v", len(got), got)
+	}
+	// sorted by name: origin before upstream
+	if got[0].Name != "origin" || got[1].Name != "upstream" {
+		t.Errorf("want [origin upstream], got [%s %s]", got[0].Name, got[1].Name)
+	}
+}
+
+func TestRemotes_NotARepo(t *testing.T) {
+	r := workspace.Repo{AbsPath: t.TempDir(), RelPath: "."}
+	_, err := r.Remotes()
+	if err == nil {
+		t.Fatal("expected error for non-repo directory, got nil")
+	}
+}

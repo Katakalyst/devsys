@@ -24,13 +24,16 @@ var authCmd = &cobra.Command{
 	Short: "Manage shared Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials",
 	Long: `Manage shared Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials.
 
-  devsys auth claude|codex|gitlab|github [--force]   bootstrap subcommands, above
-  devsys auth <project>                              interactive per-repo credential listing for a project
-  devsys auth <project> [repo] [platform] --create [--name <name>] [--force]
-  devsys auth <project> [repo] [platform] --attach <owner/repo-or-url> [--force]
-  devsys auth <project> [repo] --rotate              scriptable rotate
-  devsys auth <project> [repo] --remove              scriptable remove
-  devsys auth <project> [repo]                       scriptable ensure — only valid if repo already has a remote
+  devsys auth claude|codex|gitlab|github [--force]            bootstrap subcommands, above
+  devsys auth <project>                                       interactive per-repo credential listing for a project
+  devsys auth <project> [repo] [remote] [platform] --create [--name <name>] [--force]
+  devsys auth <project> [repo] [remote] [platform] --attach <owner/repo-or-url> [--force]
+  devsys auth <project> [repo] [remote] --rotate              scriptable rotate
+  devsys auth <project> [repo] [remote] --remove              scriptable remove
+  devsys auth <project> [repo] [remote]                       scriptable ensure — only valid if the repo/remote already has a remote
+
+  [remote] is required only once the selected repo has more than one remote — a repo with just one
+  (the common case) never needs it, same optionality rule as [repo] one level up.
 
   --token is required for any GitHub operation above (create/attach/rotate/ensure) — GitHub fine-grained
   PATs can't be created via API, so scriptable mode can't prompt for one the way the interactive form does.`,

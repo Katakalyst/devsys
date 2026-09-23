@@ -148,31 +148,34 @@ func TestRemoteHasEmbeddedCredentials(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// parseRepoAndPlatformArgs — Phase 5's scriptable "<project> [repo]
+// parseRepoAndPlatformArgs — Phase 5's scriptable "<project> [repo] [remote]
 // [platform]" arg classification (Git Remote & Credential Spec §9).
 // ---------------------------------------------------------------------------
 
 func TestParseRepoAndPlatformArgs(t *testing.T) {
 	cases := []struct {
-		extra      []string
-		repo, plat string
-		wantErr    bool
+		extra              []string
+		repo, remote, plat string
+		wantErr            bool
 	}{
-		{nil, "", "", false},
-		{[]string{"frontend"}, "frontend", "", false},
-		{[]string{"gitlab"}, "", "gitlab", false},
-		{[]string{"GitHub"}, "", "github", false}, // case-insensitive
-		{[]string{"frontend", "gitlab"}, "frontend", "gitlab", false},
-		{[]string{"gitlab", "frontend"}, "frontend", "gitlab", false}, // order-independent
-		{[]string{"frontend", "backend"}, "", "", true},               // two non-platform args
-		{[]string{"gitlab", "github"}, "", "", true},                  // platform given twice
-		{[]string{"a", "b", "c"}, "", "", true},                       // too many
+		{nil, "", "", "", false},
+		{[]string{"frontend"}, "frontend", "", "", false},
+		{[]string{"gitlab"}, "", "", "gitlab", false},
+		{[]string{"GitHub"}, "", "", "github", false}, // case-insensitive
+		{[]string{"frontend", "gitlab"}, "frontend", "", "gitlab", false},
+		{[]string{"gitlab", "frontend"}, "frontend", "", "gitlab", false}, // order-independent
+		{[]string{"frontend", "upstream"}, "frontend", "upstream", "", false},
+		{[]string{"frontend", "upstream", "gitlab"}, "frontend", "upstream", "gitlab", false},
+		{[]string{"gitlab", "frontend", "upstream"}, "frontend", "upstream", "gitlab", false}, // platform pulled out regardless of position
+		{[]string{"gitlab", "github"}, "", "", "", true},                                      // platform given twice
+		{[]string{"a", "b", "c", "d"}, "", "", "", true},                                      // too many
+		{[]string{"a", "b", "c"}, "", "", "", true},                                            // three non-platform positionals
 	}
 	for _, tc := range cases {
-		repo, plat, err := parseRepoAndPlatformArgs(tc.extra)
+		repo, remote, plat, err := parseRepoAndPlatformArgs(tc.extra)
 		if tc.wantErr {
 			if err == nil {
-				t.Errorf("parseRepoAndPlatformArgs(%v): expected error, got repo=%q platform=%q", tc.extra, repo, plat)
+				t.Errorf("parseRepoAndPlatformArgs(%v): expected error, got repo=%q remote=%q platform=%q", tc.extra, repo, remote, plat)
 			}
 			continue
 		}
@@ -180,16 +183,16 @@ func TestParseRepoAndPlatformArgs(t *testing.T) {
 			t.Errorf("parseRepoAndPlatformArgs(%v): unexpected error: %v", tc.extra, err)
 			continue
 		}
-		if repo != tc.repo || plat != tc.plat {
-			t.Errorf("parseRepoAndPlatformArgs(%v) = (%q, %q), want (%q, %q)", tc.extra, repo, plat, tc.repo, tc.plat)
+		if repo != tc.repo || remote != tc.remote || plat != tc.plat {
+			t.Errorf("parseRepoAndPlatformArgs(%v) = (%q, %q, %q), want (%q, %q, %q)", tc.extra, repo, remote, plat, tc.repo, tc.remote, tc.plat)
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// selectRepoForScriptable — Spec §9's stated error case: "[repo] omitted
+// selectRepoForScriptable — Spec §9's stated error cases: "[repo] omitted
 // with 2+ repos present -> error listing the actual discovered paths, not
-// a guess."
+// a guess," and the same rule one level down for [remote].
 // ---------------------------------------------------------------------------
 
 func TestSelectRepoForScriptable(t *testing.T) {
@@ -200,7 +203,7 @@ func TestSelectRepoForScriptable(t *testing.T) {
 	}
 
 	// Single repo, no repo arg -> resolves to the only one.
-	got, err := selectRepoForScriptable(one, "")
+	got, err := selectRepoForScriptable(one, "", "")
 	if err != nil {
 		t.Fatalf("single repo, no arg: unexpected error: %v", err)
 	}
@@ -209,7 +212,7 @@ func TestSelectRepoForScriptable(t *testing.T) {
 	}
 
 	// Multiple repos, no repo arg -> error naming the actual paths.
-	_, err = selectRepoForScriptable(two, "")
+	_, err = selectRepoForScriptable(two, "", "")
 	if err == nil {
 		t.Fatal("multiple repos, no arg: expected error, got nil")
 	}
@@ -218,7 +221,7 @@ func TestSelectRepoForScriptable(t *testing.T) {
 	}
 
 	// Multiple repos, explicit repo arg -> resolves correctly.
-	got, err = selectRepoForScriptable(two, "frontend")
+	got, err = selectRepoForScriptable(two, "frontend", "")
 	if err != nil {
 		t.Fatalf("explicit repo arg: unexpected error: %v", err)
 	}
@@ -227,9 +230,41 @@ func TestSelectRepoForScriptable(t *testing.T) {
 	}
 
 	// Repo arg that doesn't exist -> error.
-	_, err = selectRepoForScriptable(two, "doesnotexist")
+	_, err = selectRepoForScriptable(two, "doesnotexist", "")
 	if err == nil {
 		t.Fatal("nonexistent repo arg: expected error, got nil")
+	}
+}
+
+func TestSelectRepoForScriptable_MultiRemote(t *testing.T) {
+	multi := []repoAuthStatus{
+		{Repo: workspace.Repo{RelPath: "frontend"}, RemoteName: "origin", HasRemote: true},
+		{Repo: workspace.Repo{RelPath: "frontend"}, RemoteName: "upstream", HasRemote: true},
+	}
+
+	// Repo has one remote row implicitly resolved when it's the only repo
+	// and no remote arg is given -> ambiguous, must error naming both.
+	_, err := selectRepoForScriptable(multi, "", "")
+	if err == nil {
+		t.Fatal("multiple remotes, no remote arg: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "origin") || !strings.Contains(err.Error(), "upstream") {
+		t.Errorf("multiple remotes, no remote arg: error should list discovered remotes, got %q", err.Error())
+	}
+
+	// Explicit remote arg resolves unambiguously.
+	got, err := selectRepoForScriptable(multi, "frontend", "upstream")
+	if err != nil {
+		t.Fatalf("explicit remote arg: unexpected error: %v", err)
+	}
+	if got.RemoteName != "upstream" {
+		t.Errorf("explicit remote arg: got remote %q, want %q", got.RemoteName, "upstream")
+	}
+
+	// Remote arg that doesn't exist on this repo -> error.
+	_, err = selectRepoForScriptable(multi, "frontend", "doesnotexist")
+	if err == nil {
+		t.Fatal("nonexistent remote arg: expected error, got nil")
 	}
 }
 
@@ -359,6 +394,82 @@ func TestProjectRepoSecretNames_SkipsNoRemoteAndDeduplicates(t *testing.T) {
 	}
 	if len(names) != 1 || names[0] != "devsys-project-owner-shared-github-token" {
 		t.Fatalf("names = %v, want one deduplicated shared secret", names)
+	}
+}
+
+func TestProjectRepoSecretNames_MultipleRemotesOnOneRepo(t *testing.T) {
+	root := t.TempDir()
+	repo, err := gogit.PlainInit(root, false)
+	if err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{"https://github.com/owner/app.git"}}); err != nil {
+		t.Fatalf("create origin: %v", err)
+	}
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{Name: "mirror", URLs: []string{"https://gitlab.com/owner/app-mirror.git"}}); err != nil {
+		t.Fatalf("create mirror: %v", err)
+	}
+
+	podmanfake.Install(t, podmanfake.Options{SecretExists: true})
+	names, err := projectRepoSecretNames("foo", root)
+	if err != nil {
+		t.Fatalf("projectRepoSecretNames: %v", err)
+	}
+	want := map[string]bool{
+		"devsys-foo-owner-app-github-token":        true,
+		"devsys-foo-owner-app-mirror-gitlab-token": true,
+	}
+	if len(names) != len(want) {
+		t.Fatalf("names = %v, want two entries covering both remotes", names)
+	}
+	for _, name := range names {
+		if !want[name] {
+			t.Errorf("unexpected secret name %q", name)
+		}
+	}
+}
+
+func TestGatherRepoStatuses_MultipleRemotesYieldOneRowEach(t *testing.T) {
+	root := t.TempDir()
+	repo, err := gogit.PlainInit(root, false)
+	if err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{"https://github.com/owner/app.git"}}); err != nil {
+		t.Fatalf("create origin: %v", err)
+	}
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{Name: "upstream", URLs: []string{"https://gitlab.com/owner/app-upstream.git"}}); err != nil {
+		t.Fatalf("create upstream: %v", err)
+	}
+
+	podmanfake.Install(t, podmanfake.Options{SecretExists: false})
+	statuses, err := gatherRepoStatuses("foo", root)
+	if err != nil {
+		t.Fatalf("gatherRepoStatuses: %v", err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("want 2 statuses (one per remote), got %d: %+v", len(statuses), statuses)
+	}
+	names := map[string]string{}
+	for _, st := range statuses {
+		names[st.RemoteName] = st.Platform
+	}
+	if names["origin"] != "github" || names["upstream"] != "gitlab" {
+		t.Errorf("want origin=github, upstream=gitlab, got %v", names)
+	}
+}
+
+func TestGatherRepoStatuses_SingleRemoteYieldsOneStatus(t *testing.T) {
+	root := t.TempDir()
+	initTestRepoWithOrigin(t, root, "https://gitlab.com/owner/app.git")
+
+	podmanfake.Install(t, podmanfake.Options{SecretExists: false})
+	statuses, err := gatherRepoStatuses("foo", root)
+	if err != nil {
+		t.Fatalf("gatherRepoStatuses: %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].RemoteName != "origin" {
+		t.Fatalf("want exactly one origin status, got %+v", statuses)
 	}
 }
 

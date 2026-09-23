@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -48,7 +47,12 @@ const tokenExpiryWarnDays = 30
 // in `devsys auth <project>`'s interactive listing (Git Remote & Credential
 // Spec §8/§9).
 type repoAuthStatus struct {
-	Repo       workspace.Repo
+	Repo workspace.Repo
+	// RemoteName is "" until a remote exists. "origin" is the convention
+	// name devsys itself gives a repo's first remote; any other name means
+	// the agent set it (or a later remote) itself via `git remote add`
+	// (Git Remote & Credential Spec §7's multi-remote decision).
+	RemoteName string
 	HasRemote  bool
 	RemoteURL  string
 	Platform   string // "" until a remote exists
@@ -141,7 +145,7 @@ func runAuthProjectInteractive(projectName string) error {
 // (Git Remote & Credential Spec §9). Never prompts — every input it needs
 // comes from a flag, and any missing requirement is a hard error.
 func runAuthProjectScriptable(projectName string, extra []string) error {
-	repoArg, platformArg, err := parseRepoAndPlatformArgs(extra)
+	repoArg, remoteArg, platformArg, err := parseRepoAndPlatformArgs(extra)
 	if err != nil {
 		return err
 	}
@@ -191,7 +195,7 @@ func runAuthProjectScriptable(projectName string, extra []string) error {
 		return fmt.Errorf("no repos found in %s's workspace", projectName)
 	}
 
-	st, err := selectRepoForScriptable(statuses, repoArg)
+	st, err := selectRepoForScriptable(statuses, repoArg, remoteArg)
 	if err != nil {
 		return err
 	}
@@ -221,52 +225,87 @@ func isStdinInteractive() bool {
 }
 
 // parseRepoAndPlatformArgs classifies devsys auth <project>'s remaining
-// positional args into repo and platform: an arg equal to "gitlab" or
-// "github" is the platform, anything else is the repo (Spec §9's
-// "<project> [repo] [platform]" — order-independent here so repo can be
-// omitted without an awkward placeholder when only platform is needed). A
-// repo whose own RelPath happens to literally be "gitlab"/"github" can't be
-// addressed this way — an accepted, narrow edge case, same category as the
+// positional args into repo, remote, and platform: an arg equal to "gitlab"
+// or "github" is the platform (order-independent, pulled out first);
+// whatever's left is up to two positionals, repo then remote, shallow to
+// deep (Spec §9's "<project> [repo] [remote] [platform]" — [remote] follows
+// the same optionality rule as [repo], one level down: required only once
+// the selected repo has more than one remote). A repo or remote whose name
+// happens to literally be "gitlab"/"github" can't be addressed this way —
+// an accepted, narrow edge case, same category as the
 // project-name-vs-bootstrap-subcommand-name ambiguity already accepted
 // elsewhere on this command.
-func parseRepoAndPlatformArgs(extra []string) (repo, platform string, err error) {
-	if len(extra) > 2 {
-		return "", "", fmt.Errorf("too many arguments — expected [repo] [platform]")
+func parseRepoAndPlatformArgs(extra []string) (repo, remote, platform string, err error) {
+	if len(extra) > 3 {
+		return "", "", "", fmt.Errorf("too many arguments — expected [repo] [remote] [platform]")
 	}
+	var positional []string
 	for _, a := range extra {
 		lower := strings.ToLower(a)
 		if lower == "gitlab" || lower == "github" {
 			if platform != "" {
-				return "", "", fmt.Errorf("platform given twice")
+				return "", "", "", fmt.Errorf("platform given twice")
 			}
 			platform = lower
 			continue
 		}
-		if repo != "" {
-			return "", "", fmt.Errorf("unexpected extra argument %q", a)
-		}
-		repo = a
+		positional = append(positional, a)
 	}
-	return repo, platform, nil
+	if len(positional) > 2 {
+		return "", "", "", fmt.Errorf("unexpected extra argument %q", positional[2])
+	}
+	if len(positional) >= 1 {
+		repo = positional[0]
+	}
+	if len(positional) >= 2 {
+		remote = positional[1]
+	}
+	return repo, remote, platform, nil
 }
 
-// selectRepoForScriptable resolves which discovered repo a scriptable
-// invocation applies to: the explicitly named one, or the project's only
-// one if none was given. Spec §9's stated error case: "[repo] omitted with
-// 2+ repos present -> error listing the actual discovered paths, not a guess."
-func selectRepoForScriptable(statuses []repoAuthStatus, repoArg string) (*repoAuthStatus, error) {
+// selectRepoForScriptable resolves which (repo, remote) row a scriptable
+// invocation applies to. Repo: the explicitly named one, or the project's
+// only one if none was given — Spec §9's stated error case: "[repo] omitted
+// with 2+ repos present -> error listing the actual discovered paths, not a
+// guess." Remote: the same rule one level down — explicitly named, or the
+// repo's only remote row if none was given; omitted with 2+ remote rows on
+// the selected repo errors listing the actual discovered remote names.
+func selectRepoForScriptable(statuses []repoAuthStatus, repoArg, remoteArg string) (*repoAuthStatus, error) {
+	var candidates []*repoAuthStatus
 	if repoArg != "" {
 		for i := range statuses {
 			if statuses[i].Repo.RelPath == repoArg {
-				return &statuses[i], nil
+				candidates = append(candidates, &statuses[i])
 			}
 		}
-		return nil, fmt.Errorf("no repo at %q — discovered repos: %s", repoArg, joinRepoPaths(statuses))
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("no repo at %q — discovered repos: %s", repoArg, joinRepoPaths(statuses))
+		}
+	} else {
+		paths := make(map[string]bool)
+		for i := range statuses {
+			paths[statuses[i].Repo.RelPath] = true
+		}
+		if len(paths) != 1 {
+			return nil, fmt.Errorf("project has more than one repo — specify which one: %s", joinRepoPaths(statuses))
+		}
+		for i := range statuses {
+			candidates = append(candidates, &statuses[i])
+		}
 	}
-	if len(statuses) != 1 {
-		return nil, fmt.Errorf("project has more than one repo — specify which one: %s", joinRepoPaths(statuses))
+
+	if remoteArg != "" {
+		for _, c := range candidates {
+			if c.RemoteName == remoteArg {
+				return c, nil
+			}
+		}
+		return nil, fmt.Errorf("no remote %q on repo %q — discovered remotes: %s", remoteArg, candidates[0].Repo.RelPath, joinRemoteNames(candidates))
 	}
-	return &statuses[0], nil
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	return nil, fmt.Errorf("repo %q has more than one remote — specify which one: %s", candidates[0].Repo.RelPath, joinRemoteNames(candidates))
 }
 
 func joinRepoPaths(statuses []repoAuthStatus) string {
@@ -275,6 +314,16 @@ func joinRepoPaths(statuses []repoAuthStatus) string {
 		paths[i] = st.Repo.RelPath
 	}
 	return strings.Join(paths, ", ")
+}
+
+func joinRemoteNames(candidates []*repoAuthStatus) string {
+	names := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if c.RemoteName != "" {
+			names = append(names, c.RemoteName)
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 // runScriptableOperation dispatches on which operation flag was given —
@@ -301,6 +350,16 @@ func runScriptableOperation(projectName string, st *repoAuthStatus, platformArg 
 // interactive [c] Change menu's underlying operation (Spec §9: "--force is
 // how the scriptable form does what the interactive menu's [c] Change does").
 func scriptableCreateOrAttach(projectName string, st *repoAuthStatus, mode, nameOrTarget, platformArg string) (bool, error) {
+	// Preserved across a --force replace so the existing remote's own name
+	// (e.g. "upstream") survives being re-targeted, rather than being
+	// renamed to "origin" — a force-replace changes what a remote points
+	// at, not what it's called. A brand-new remote (st.RemoteName == "")
+	// always gets devsys's first-remote convention name, "origin".
+	remoteName := st.RemoteName
+	if remoteName == "" {
+		remoteName = "origin"
+	}
+
 	if st.HasRemote {
 		if !authScriptForce {
 			return false, fmt.Errorf("%q is already configured — use --force to replace, --remove to clear, or --rotate to refresh", st.Repo.RelPath)
@@ -308,7 +367,7 @@ func scriptableCreateOrAttach(projectName string, st *repoAuthStatus, mode, name
 		if err := revokeAndDeleteSecret(st); err != nil {
 			return false, err
 		}
-		if err := clearOriginRemote(st.Repo.AbsPath); err != nil {
+		if err := clearRemote(st.Repo.AbsPath, remoteName); err != nil {
 			return false, err
 		}
 		st.HasRemote, st.HasToken = false, false
@@ -334,7 +393,7 @@ func scriptableCreateOrAttach(projectName string, st *repoAuthStatus, mode, name
 		return false, err
 	}
 
-	if err := writeOriginRemote(st.Repo.AbsPath, remoteURL); err != nil {
+	if err := writeRemote(st.Repo.AbsPath, remoteName, remoteURL); err != nil {
 		return false, fmt.Errorf("cannot write remote: %w", err)
 	}
 	repoID, err := workspace.RepoIDFromURL(remoteURL)
@@ -346,6 +405,7 @@ func scriptableCreateOrAttach(projectName string, st *repoAuthStatus, mode, name
 		return false, err
 	}
 
+	st.RemoteName = remoteName
 	st.HasRemote, st.RemoteURL, st.Platform, st.SecretName, st.HasToken = true, remoteURL, platformArg, secretName, true
 	st.ExpiresAt = labels["devsys.expires-at"]
 	fmt.Printf("%s: remote wired, token stored (%s)\n", st.Repo.RelPath, secretName)
@@ -399,7 +459,7 @@ func scriptableRotate(st *repoAuthStatus) (bool, error) {
 		newRemoteURL, err := embedTokenInHTTPSURL(st.RemoteURL, userInfo, tokenValue)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not rewrite remote URL with the new token: %v\n", err)
-		} else if err := writeOriginRemote(st.Repo.AbsPath, newRemoteURL); err != nil {
+		} else if err := writeRemote(st.Repo.AbsPath, st.RemoteName, newRemoteURL); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not update the remote with the new token: %v\n", err)
 		} else {
 			st.RemoteURL = newRemoteURL
@@ -484,9 +544,12 @@ func scriptableEnsureToken(projectName string, st *repoAuthStatus) (bool, error)
 }
 
 // gatherRepoStatuses runs the recursive discovery walk and derives each
-// repo's current credential state — purely by reading git config and
-// checking which Podman secrets already exist, never from a stored config
-// file (R15).
+// (repo, remote) pair's current credential state — purely by reading git
+// config and checking which Podman secrets already exist, never from a
+// stored config file (R15). A repo with no remotes yet yields one "no
+// remote" row; a repo with one or more remotes yields one row per remote
+// (Git Remote & Credential Spec §7's multi-remote decision) — every remote
+// is enumerated, not just "origin".
 func gatherRepoStatuses(projectName, workspaceRoot string) ([]repoAuthStatus, error) {
 	repos, err := workspace.DiscoverRepos(workspaceRoot)
 	if err != nil {
@@ -495,52 +558,64 @@ func gatherRepoStatuses(projectName, workspaceRoot string) ([]repoAuthStatus, er
 
 	statuses := make([]repoAuthStatus, 0, len(repos))
 	for _, r := range repos {
-		st := repoAuthStatus{Repo: r}
-
-		originURL, err := r.OriginURL()
+		remotes, err := r.Remotes()
 		if err != nil {
-			if errors.Is(err, workspace.ErrNoOrigin) {
-				statuses = append(statuses, st)
-				continue
+			return nil, fmt.Errorf("cannot read remotes for %s: %w", r.RelPath, err)
+		}
+		if len(remotes) == 0 {
+			statuses = append(statuses, repoAuthStatus{Repo: r})
+			continue
+		}
+
+		for _, rem := range remotes {
+			st := repoAuthStatus{Repo: r, RemoteName: rem.Name, HasRemote: true, RemoteURL: rem.URL}
+
+			platform, err := workspace.PlatformFromURL(rem.URL)
+			if err != nil {
+				return nil, fmt.Errorf("cannot determine platform for %s (%s): %w", r.RelPath, rem.Name, err)
 			}
-			return nil, fmt.Errorf("cannot read remote for %s: %w", r.RelPath, err)
-		}
-		st.HasRemote = true
-		st.RemoteURL = originURL
+			st.Platform = platform
 
-		platform, err := workspace.PlatformFromURL(originURL)
-		if err != nil {
-			return nil, fmt.Errorf("cannot determine platform for %s: %w", r.RelPath, err)
-		}
-		st.Platform = platform
-
-		repoID, err := workspace.RepoIDFromURL(originURL)
-		if err != nil {
-			return nil, fmt.Errorf("cannot determine repo id for %s: %w", r.RelPath, err)
-		}
-		secretName := workspace.SecretName(projectName, repoID, platform)
-		if podman.SecretExists(secretName) {
-			st.SecretName = secretName
-			st.HasToken = true
-			if labels, err := podman.GetSecretLabels(secretName); err == nil {
-				st.ExpiresAt = labels["devsys.expires-at"]
+			repoID, err := workspace.RepoIDFromURL(rem.URL)
+			if err != nil {
+				return nil, fmt.Errorf("cannot determine repo id for %s (%s): %w", r.RelPath, rem.Name, err)
 			}
-		}
+			secretName := workspace.SecretName(projectName, repoID, platform)
+			if podman.SecretExists(secretName) {
+				st.SecretName = secretName
+				st.HasToken = true
+				if labels, err := podman.GetSecretLabels(secretName); err == nil {
+					st.ExpiresAt = labels["devsys.expires-at"]
+				}
+			}
 
-		statuses = append(statuses, st)
+			statuses = append(statuses, st)
+		}
 	}
 	return statuses, nil
 }
 
+// printRepoListing shows the remote name alongside the repo path only once a
+// repo actually has more than one remote — a single-remote repo's row stays
+// exactly the pre-multi-remote format (Git Remote & Credential Spec §9: "a
+// repo's remotes are otherwise shown collapsed onto its single row").
 func printRepoListing(statuses []repoAuthStatus) {
+	remoteCount := make(map[string]int)
+	for _, st := range statuses {
+		remoteCount[st.Repo.RelPath]++
+	}
 	for i, st := range statuses {
+		label := st.Repo.RelPath
+		if remoteCount[st.Repo.RelPath] > 1 && st.RemoteName != "" {
+			label = fmt.Sprintf("%s (%s)", st.Repo.RelPath, st.RemoteName)
+		}
 		switch {
 		case !st.HasRemote:
-			fmt.Printf("  %d. %-15s no remote\n", i+1, st.Repo.RelPath)
+			fmt.Printf("  %d. %-15s no remote\n", i+1, label)
 		case !st.HasToken:
-			fmt.Printf("  %d. %-15s %-7s no token\n", i+1, st.Repo.RelPath, st.Platform)
+			fmt.Printf("  %d. %-15s %-7s no token\n", i+1, label, st.Platform)
 		default:
-			fmt.Printf("  %d. %-15s %-7s %s\n", i+1, st.Repo.RelPath, st.Platform, tokenExpiryText(st.ExpiresAt))
+			fmt.Printf("  %d. %-15s %-7s %s\n", i+1, label, st.Platform, tokenExpiryText(st.ExpiresAt))
 		}
 	}
 }
@@ -603,7 +678,7 @@ func parseSelection(input string, max int) ([]int, error) {
 func configureRepo(reader *bufio.Reader, projectName string, st *repoAuthStatus) (bool, error) {
 	switch {
 	case !st.HasRemote:
-		return configureNoRemote(reader, projectName, st)
+		return configureNoRemote(reader, projectName, st, "origin")
 	case !st.HasToken:
 		return configureRemoteNoToken(reader, projectName, st)
 	default:
@@ -612,9 +687,12 @@ func configureRepo(reader *bufio.Reader, projectName string, st *repoAuthStatus)
 }
 
 // configureNoRemote runs the create-or-attach wizard for a repo with no
-// remote yet — the only branch that ever writes a remote (Git Remote &
+// remote yet — the only branch that ever writes a fresh remote (Git Remote &
 // Credential Spec §7: "auth never rewrites a remote it didn't create").
-func configureNoRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus) (bool, error) {
+// remoteName is "origin" for a repo's first-ever remote (the normal case,
+// via configureRepo above); changeRepoTarget below reuses this same wizard
+// with the existing remote's own name preserved, for a deliberate re-target.
+func configureNoRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus, remoteName string) (bool, error) {
 	fmt.Printf("Configuring %q (no remote):\n", st.Repo.RelPath)
 	platform, err := promptPlatform(reader)
 	if err != nil {
@@ -637,7 +715,7 @@ func configureNoRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 		return false, err
 	}
 
-	if err := writeOriginRemote(st.Repo.AbsPath, remoteURL); err != nil {
+	if err := writeRemote(st.Repo.AbsPath, remoteName, remoteURL); err != nil {
 		return false, fmt.Errorf("cannot write remote: %w", err)
 	}
 
@@ -651,6 +729,7 @@ func configureNoRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 	}
 
 	fmt.Printf("  -> remote wired, token stored (%s)\n", secretName)
+	st.RemoteName = remoteName
 	st.HasRemote = true
 	st.RemoteURL = remoteURL
 	st.Platform = platform
@@ -733,10 +812,11 @@ func configureAlreadySet(reader *bufio.Reader, projectName string, st *repoAuthS
 // rewrites a remote it didn't create" (Spec §7): that rule is about auth's
 // own default behavior, not a menu the user deliberately opened (Spec §9).
 func changeRepoTarget(reader *bufio.Reader, projectName string, st *repoAuthStatus) (bool, error) {
+	remoteName := st.RemoteName
 	if err := revokeAndDeleteSecret(st); err != nil {
 		return false, err
 	}
-	if err := clearOriginRemote(st.Repo.AbsPath); err != nil {
+	if err := clearRemote(st.Repo.AbsPath, remoteName); err != nil {
 		return false, err
 	}
 	st.HasRemote = false
@@ -745,7 +825,7 @@ func changeRepoTarget(reader *bufio.Reader, projectName string, st *repoAuthStat
 	st.Platform = ""
 	st.SecretName = ""
 	st.ExpiresAt = ""
-	return configureNoRemote(reader, projectName, st)
+	return configureNoRemote(reader, projectName, st, remoteName)
 }
 
 // rotateRepoToken is the [x] menu option: same target, fresh token value.
@@ -810,7 +890,7 @@ func rotateRepoToken(reader *bufio.Reader, st *repoAuthStatus) (bool, error) {
 		newRemoteURL, err := embedTokenInHTTPSURL(st.RemoteURL, userInfo, tokenValue)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Warning: could not rewrite remote URL with the new token: %v\n", err)
-		} else if err := writeOriginRemote(st.Repo.AbsPath, newRemoteURL); err != nil {
+		} else if err := writeRemote(st.Repo.AbsPath, st.RemoteName, newRemoteURL); err != nil {
 			fmt.Fprintf(os.Stderr, "  Warning: could not update the remote with the new token: %v\n", err)
 		} else {
 			st.RemoteURL = newRemoteURL
@@ -1253,7 +1333,14 @@ func storeRepoSecret(secretName, value string, labels map[string]string) error {
 	return podman.CreateSecretFromStdin(secretName, value, labels)
 }
 
-func writeOriginRemote(repoPath, remoteURL string) error {
+// writeRemote writes (creating or overwriting) the named remote — generalized
+// from the original origin-only writeOriginRemote to support any remote name
+// (Git Remote & Credential Spec §7's multi-remote decision). Every call site
+// still only ever writes a remote it's itself creating or explicitly
+// re-targeting (via the [c] Change/--force path) — never rewriting a bare
+// remote the agent set itself, per the spec's "auth never rewrites a remote
+// it didn't create" rule.
+func writeRemote(repoPath, remoteName, remoteURL string) error {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return fmt.Errorf("cannot open repo at %s: %w", repoPath, err)
@@ -1265,11 +1352,13 @@ func writeOriginRemote(repoPath, remoteURL string) error {
 	if cfg.Remotes == nil {
 		cfg.Remotes = map[string]*gitconfig.RemoteConfig{}
 	}
-	cfg.Remotes["origin"] = &gitconfig.RemoteConfig{Name: "origin", URLs: []string{remoteURL}}
+	cfg.Remotes[remoteName] = &gitconfig.RemoteConfig{Name: remoteName, URLs: []string{remoteURL}}
 	return repo.SetConfig(cfg)
 }
 
-func clearOriginRemote(repoPath string) error {
+// clearRemote removes the named remote — generalized from clearOriginRemote
+// the same way writeRemote is (see above).
+func clearRemote(repoPath, remoteName string) error {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return fmt.Errorf("cannot open repo at %s: %w", repoPath, err)
@@ -1278,7 +1367,7 @@ func clearOriginRemote(repoPath string) error {
 	if err != nil {
 		return fmt.Errorf("cannot read repo config: %w", err)
 	}
-	delete(cfg.Remotes, "origin")
+	delete(cfg.Remotes, remoteName)
 	return repo.SetConfig(cfg)
 }
 
@@ -1377,15 +1466,18 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 }
 
 // projectRepoSecretNames derives the exact per-repo credential secret names
-// belonging to the repos currently discovered in workspaceRoot. Ownership is
-// never inferred from a string prefix: project names are not delimiter-safe
-// ("foo" is a prefix of "foo-bar"), so prefix matching could mount another
-// project's credential into this container.
+// belonging to the repos currently discovered in workspaceRoot — one per
+// configured remote, not just "origin" (Git Remote & Credential Spec §7's
+// multi-remote decision). Ownership is never inferred from a string prefix:
+// project names are not delimiter-safe ("foo" is a prefix of "foo-bar"), so
+// prefix matching could mount another project's credential into this
+// container.
 //
-// The repo's own origin URL is the deterministic bridge from workspace path
-// to secret name (Git Remote & Credential Spec §7/R15). Repos without an
-// origin or without a stored secret are skipped. Duplicate names are emitted
-// once when two local repos point at the same platform repo.
+// Each remote's own URL is the deterministic bridge from workspace path to
+// secret name (Spec §7/R15). A repo with no remotes contributes nothing.
+// Duplicate names are emitted once when two remotes (on the same repo, or
+// across different repos) resolve to the same secret — e.g. the same
+// platform repo pointed at by more than one local remote.
 func projectRepoSecretNames(projectName, workspaceRoot string) ([]string, error) {
 	repos, err := workspace.DiscoverRepos(workspaceRoot)
 	if err != nil {
@@ -1395,27 +1487,26 @@ func projectRepoSecretNames(projectName, workspaceRoot string) ([]string, error)
 	var matched []string
 	seen := make(map[string]bool)
 	for _, repo := range repos {
-		remoteURL, err := repo.OriginURL()
-		if errors.Is(err, workspace.ErrNoOrigin) {
-			continue
-		}
+		remotes, err := repo.Remotes()
 		if err != nil {
-			return nil, fmt.Errorf("cannot read remote for %s: %w", repo.RelPath, err)
+			return nil, fmt.Errorf("cannot read remotes for %s: %w", repo.RelPath, err)
 		}
-		platform, err := workspace.PlatformFromURL(remoteURL)
-		if err != nil {
-			return nil, fmt.Errorf("cannot determine platform for %s: %w", repo.RelPath, err)
+		for _, rem := range remotes {
+			platform, err := workspace.PlatformFromURL(rem.URL)
+			if err != nil {
+				return nil, fmt.Errorf("cannot determine platform for %s (%s): %w", repo.RelPath, rem.Name, err)
+			}
+			repoID, err := workspace.RepoIDFromURL(rem.URL)
+			if err != nil {
+				return nil, fmt.Errorf("cannot determine repo id for %s (%s): %w", repo.RelPath, rem.Name, err)
+			}
+			name := workspace.SecretName(projectName, repoID, platform)
+			if seen[name] || !podman.SecretExists(name) {
+				continue
+			}
+			seen[name] = true
+			matched = append(matched, name)
 		}
-		repoID, err := workspace.RepoIDFromURL(remoteURL)
-		if err != nil {
-			return nil, fmt.Errorf("cannot determine repo id for %s: %w", repo.RelPath, err)
-		}
-		name := workspace.SecretName(projectName, repoID, platform)
-		if seen[name] || !podman.SecretExists(name) {
-			continue
-		}
-		seen[name] = true
-		matched = append(matched, name)
 	}
 	return matched, nil
 }
