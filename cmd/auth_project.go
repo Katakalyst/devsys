@@ -1361,7 +1361,7 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 		"--env", "IS_SANDBOX=1",
 	}
 
-	secretNames, err := projectRepoSecretNames(projectName)
+	secretNames, err := projectRepoSecretNames(projectName, projectPath)
 	if err != nil {
 		return fmt.Errorf("cannot list project secrets: %w", err)
 	}
@@ -1374,30 +1374,45 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 	return err
 }
 
-// projectRepoSecretNames returns every per-repo credential secret belonging
-// to projectName, matching devsys-<project>-<repo-id>-<platform>-token
-// (Git Remote & Credential Spec §7). Excludes the legacy single-secret name
-// cmd/init.go still creates (devsys-<project>-gitlab-token /
-// devsys-<project>-github-token, no repo-id component) — that one is
-// mounted by cmd/init.go's own, still-unreworked container-creation path,
-// not this one.
-func projectRepoSecretNames(projectName string) ([]string, error) {
-	all, err := podman.ListDevsysSecrets()
+// projectRepoSecretNames derives the exact per-repo credential secret names
+// belonging to the repos currently discovered in workspaceRoot. Ownership is
+// never inferred from a string prefix: project names are not delimiter-safe
+// ("foo" is a prefix of "foo-bar"), so prefix matching could mount another
+// project's credential into this container.
+//
+// The repo's own origin URL is the deterministic bridge from workspace path
+// to secret name (Git Remote & Credential Spec §7/R15). Repos without an
+// origin or without a stored secret are skipped. Duplicate names are emitted
+// once when two local repos point at the same platform repo.
+func projectRepoSecretNames(projectName, workspaceRoot string) ([]string, error) {
+	repos, err := workspace.DiscoverRepos(workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
-	prefix := fmt.Sprintf("devsys-%s-", projectName)
-	legacyGitLab := fmt.Sprintf("devsys-%s-gitlab-token", projectName)
-	legacyGitHub := fmt.Sprintf("devsys-%s-github-token", projectName)
 
 	var matched []string
-	for _, name := range all {
-		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, "-token") {
+	seen := make(map[string]bool)
+	for _, repo := range repos {
+		remoteURL, err := repo.OriginURL()
+		if errors.Is(err, workspace.ErrNoOrigin) {
 			continue
 		}
-		if name == legacyGitLab || name == legacyGitHub {
+		if err != nil {
+			return nil, fmt.Errorf("cannot read remote for %s: %w", repo.RelPath, err)
+		}
+		platform, err := workspace.PlatformFromURL(remoteURL)
+		if err != nil {
+			return nil, fmt.Errorf("cannot determine platform for %s: %w", repo.RelPath, err)
+		}
+		repoID, err := workspace.RepoIDFromURL(remoteURL)
+		if err != nil {
+			return nil, fmt.Errorf("cannot determine repo id for %s: %w", repo.RelPath, err)
+		}
+		name := workspace.SecretName(projectName, repoID, platform)
+		if seen[name] || !podman.SecretExists(name) {
 			continue
 		}
+		seen[name] = true
 		matched = append(matched, name)
 	}
 	return matched, nil

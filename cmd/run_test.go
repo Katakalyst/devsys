@@ -316,10 +316,11 @@ func TestWarnIfCLIOutdated_ThrottledPattern(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRebuildProject_BuildRmCreate(t *testing.T) {
+	projectPath := t.TempDir()
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: true,
 		VolumeExists:    true, // skip volume creation for simplicity
-		ProjectPath:     "/tmp/devsys-testproject",
+		ProjectPath:     projectPath,
 	})
 
 	err := rebuildProject("testproject")
@@ -354,10 +355,11 @@ func TestRebuildProject_NoProjectPath_ReturnsError(t *testing.T) {
 }
 
 func TestRebuildProject_BuildFails_ReturnsError(t *testing.T) {
+	projectPath := t.TempDir()
 	podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: true,
 		VolumeExists:    true,
-		ProjectPath:     "/tmp/devsys-testproject",
+		ProjectPath:     projectPath,
 		BuildFails:      true,
 	})
 
@@ -368,10 +370,11 @@ func TestRebuildProject_BuildFails_ReturnsError(t *testing.T) {
 }
 
 func TestRebuildProject_CreateFails_ReturnsError(t *testing.T) {
+	projectPath := t.TempDir()
 	podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: true,
 		VolumeExists:    true,
-		ProjectPath:     "/tmp/devsys-testproject",
+		ProjectPath:     projectPath,
 		CreateFails:     true,
 	})
 
@@ -382,10 +385,11 @@ func TestRebuildProject_CreateFails_ReturnsError(t *testing.T) {
 }
 
 func TestRebuildProject_NoExistingContainer_SkipsRm(t *testing.T) {
+	projectPath := t.TempDir()
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: false, // no container to remove before recreating
 		VolumeExists:    true,
-		ProjectPath:     "/tmp/devsys-testproject",
+		ProjectPath:     projectPath,
 	})
 
 	err := rebuildProject("testproject")
@@ -648,10 +652,11 @@ func withDryRun(t *testing.T, v bool) *bytes.Buffer {
 }
 
 func TestRebuildProject_DryRun_SkipsBuildRmCreate(t *testing.T) {
+	projectPath := t.TempDir()
 	rec := podmanfake.Install(t, podmanfake.Options{
 		ContainerExists: true,
 		VolumeExists:    true,
-		ProjectPath:     "/tmp/devsys-testproject",
+		ProjectPath:     projectPath,
 	})
 	buf := withDryRun(t, true)
 

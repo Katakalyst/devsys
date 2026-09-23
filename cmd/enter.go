@@ -156,7 +156,12 @@ func checkAgentAuth(agent string) {
 func checkTokenExpiry(projectName string) {
 	warnIfExpiring(fmt.Sprintf("devsys-%s-gitlab-token", projectName), projectName)
 
-	secretNames, err := projectRepoSecretNames(projectName)
+	containerName := fmt.Sprintf("devsys-%s", projectName)
+	projectPath, err := getProjectPath(containerName)
+	if err != nil {
+		return
+	}
+	secretNames, err := projectRepoSecretNames(projectName, projectPath)
 	if err != nil {
 		return
 	}

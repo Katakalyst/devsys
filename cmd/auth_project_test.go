@@ -1,10 +1,15 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	gogit "github.com/go-git/go-git/v5"
+	gitconfig "github.com/go-git/go-git/v5/config"
+	"github.com/katakalyst/devsys/internal/podmanfake"
 	"github.com/katakalyst/devsys/internal/workspace"
 )
 
@@ -308,5 +313,67 @@ func TestEmbedTokenInHTTPSURL(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("embedTokenInHTTPSURL(%q) = %q, want %q", tc.rawURL, got, tc.want)
 		}
+	}
+}
+
+func TestProjectRepoSecretNames_DerivesExactNamesFromDiscoveredRepos(t *testing.T) {
+	root := t.TempDir()
+	initTestRepoWithOrigin(t, root, "https://github.com/owner/app.git")
+	initTestRepoWithOrigin(t, filepath.Join(root, "backend"), "https://gitlab.com/team/backend.git")
+
+	// Every exact candidate exists. The important regression assertion is
+	// that the function derives candidates from these repos instead of listing
+	// all secrets and prefix-matching "foo", which also matched "foo-bar".
+	podmanfake.Install(t, podmanfake.Options{SecretExists: true})
+	names, err := projectRepoSecretNames("foo", root)
+	if err != nil {
+		t.Fatalf("projectRepoSecretNames: %v", err)
+	}
+	want := []string{
+		"devsys-foo-owner-app-github-token",
+		"devsys-foo-team-backend-gitlab-token",
+	}
+	if strings.Join(names, "|") != strings.Join(want, "|") {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+	for _, name := range names {
+		if strings.HasPrefix(name, "devsys-foo-bar-") {
+			t.Fatalf("matched prefix-related project foo-bar secret: %s", name)
+		}
+	}
+}
+
+func TestProjectRepoSecretNames_SkipsNoRemoteAndDeduplicates(t *testing.T) {
+	root := t.TempDir()
+	initTestRepoWithOrigin(t, root, "https://github.com/owner/shared.git")
+	initTestRepoWithOrigin(t, filepath.Join(root, "duplicate"), "https://github.com/owner/shared.git")
+	if _, err := gogit.PlainInit(filepath.Join(root, "no-remote"), false); err != nil {
+		t.Fatalf("init no-remote repo: %v", err)
+	}
+
+	podmanfake.Install(t, podmanfake.Options{SecretExists: true})
+	names, err := projectRepoSecretNames("project", root)
+	if err != nil {
+		t.Fatalf("projectRepoSecretNames: %v", err)
+	}
+	if len(names) != 1 || names[0] != "devsys-project-owner-shared-github-token" {
+		t.Fatalf("names = %v, want one deduplicated shared secret", names)
+	}
+}
+
+func initTestRepoWithOrigin(t *testing.T, path, remoteURL string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	repo, err := gogit.PlainInit(path, false)
+	if err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{
+		Name: "origin",
+		URLs: []string{remoteURL},
+	}); err != nil {
+		t.Fatalf("create origin: %v", err)
 	}
 }
