@@ -43,10 +43,22 @@ func (r Repo) Depth() int {
 // and difficulty of discovery is not a reason to support it less (Git Remote &
 // Credential Spec §7).
 //
+// A repo root is marked by a ".git" entry that is either a directory (an
+// ordinary repo) or a file (a formal submodule or a linked worktree, both of
+// which point elsewhere via a "gitdir: <path>" line). Submodules are real
+// repos — their own remote, their own history (Spec §5 Scenario 9) — and are
+// included exactly like any other. Worktrees are excluded: a linked worktree
+// shares its main repo's remotes and has none of its own, so including it
+// would surface a permanently-unconfigurable "no remote" row, not a real gap
+// to fill. This distinction is read from git's own fixed internal layout (a
+// worktree's gitdir always lives under <main-repo>/.git/worktrees/<name>, a
+// submodule's under <parent>/.git/modules/<name>), not guessed — so it isn't
+// the kind of heuristic filtering the rule below rejects.
+//
 // Noise such as a vendored .git inside node_modules is handled by ordering,
 // not filtering: it sorts deep, after the repos the user actually cares about.
-// Nothing is excluded — no skip-list (spec §7 explicitly rejects heuristic
-// filtering).
+// Nothing else is excluded — no skip-list (spec §7 explicitly rejects
+// heuristic filtering).
 //
 // The walk is always fresh; nothing is cached or read from a config file (R15).
 // Permission errors on individual directories are skipped silently so an
@@ -74,21 +86,36 @@ func DiscoverRepos(workspaceRoot string) ([]Repo, error) {
 			return nil
 		}
 
-		if !d.IsDir() || d.Name() != ".git" {
+		if d.Name() != ".git" {
 			return nil
 		}
 
-		// path is the .git directory itself; its parent is the repo root.
+		if d.IsDir() {
+			// path is the .git directory itself; its parent is the repo root.
+			repoRoot := filepath.Dir(path)
+			rel, relErr := filepath.Rel(abs, repoRoot)
+			if relErr != nil {
+				// Should not happen since repoRoot is always under abs.
+				return fmt.Errorf("cannot compute relative path for %s: %w", repoRoot, relErr)
+			}
+			repos = append(repos, Repo{AbsPath: repoRoot, RelPath: rel})
+			// Do not descend into .git itself — there are no repos inside there.
+			return fs.SkipDir
+		}
+
+		// A ".git" file (submodule or worktree) — never a directory to
+		// descend into, so no fs.SkipDir needed either way below.
+		isWorktree, gitFileErr := gitFileIsWorktree(path)
+		if gitFileErr != nil || isWorktree {
+			return nil
+		}
 		repoRoot := filepath.Dir(path)
-		rel, err := filepath.Rel(abs, repoRoot)
-		if err != nil {
-			// Should not happen since repoRoot is always under abs.
-			return fmt.Errorf("cannot compute relative path for %s: %w", repoRoot, err)
+		rel, relErr := filepath.Rel(abs, repoRoot)
+		if relErr != nil {
+			return fmt.Errorf("cannot compute relative path for %s: %w", repoRoot, relErr)
 		}
 		repos = append(repos, Repo{AbsPath: repoRoot, RelPath: rel})
-
-		// Do not descend into .git itself — there are no repos inside there.
-		return fs.SkipDir
+		return nil
 	})
 	if walkErr != nil {
 		return nil, fmt.Errorf("cannot walk workspace: %w", walkErr)
@@ -103,4 +130,25 @@ func DiscoverRepos(workspaceRoot string) ([]Repo, error) {
 	})
 
 	return repos, nil
+}
+
+// gitFileIsWorktree reads a ".git" file's "gitdir: <path>" pointer and
+// reports whether that path lives under a .git/worktrees/ directory — git's
+// own fixed layout for a linked worktree, as opposed to .git/modules/ for a
+// formal submodule. A malformed or unreadable file is reported as an error;
+// the caller treats that the same as "skip this entry," consistent with
+// DiscoverRepos's existing "skip what can't be read" behavior.
+func gitFileIsWorktree(gitFilePath string) (bool, error) {
+	data, err := os.ReadFile(gitFilePath)
+	if err != nil {
+		return false, err
+	}
+	line := strings.TrimSpace(string(data))
+	const prefix = "gitdir:"
+	if !strings.HasPrefix(line, prefix) {
+		return false, fmt.Errorf("unrecognized .git file format in %s", gitFilePath)
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	normalized := filepath.ToSlash(target)
+	return strings.Contains(normalized, "/.git/worktrees/"), nil
 }

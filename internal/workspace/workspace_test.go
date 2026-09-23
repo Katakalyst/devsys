@@ -194,3 +194,87 @@ func relPaths(repos []workspace.Repo) []string {
 	}
 	return out
 }
+
+// ---------------------------------------------------------------------------
+// Submodules and linked worktrees — .git as a *file* (gitdir indirection),
+// not a directory. Spec §5 Scenario 9 puts formal submodules in the same
+// bucket as any other repo; linked worktrees share their main repo's remotes
+// and are deliberately excluded (documents/TODO.md).
+// ---------------------------------------------------------------------------
+
+// mkGitFile writes dir/.git as a file pointing at target via "gitdir: ",
+// the real layout git itself uses for both submodules and linked worktrees.
+func mkGitFile(t *testing.T, dir, target string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkGitFile mkdir %s: %v", dir, err)
+	}
+	content := "gitdir: " + target + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte(content), 0o644); err != nil {
+		t.Fatalf("mkGitFile write %s: %v", dir, err)
+	}
+}
+
+func TestDiscoverRepos_SubmoduleGitFileIsDiscovered(t *testing.T) {
+	root := t.TempDir()
+	mkGit(t, root)
+	// A submodule's .git file points into its parent's .git/modules/<name> —
+	// this is what a real `git submodule add` produces.
+	mkGitFile(t, filepath.Join(root, "vendor", "lib"), "../../.git/modules/vendor/lib")
+
+	repos, err := workspace.DiscoverRepos(root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{".", filepath.Join("vendor", "lib")}
+	got := relPaths(repos)
+	if len(got) != len(want) {
+		t.Fatalf("want %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("repos[%d]: want %q, got %q (full: %v)", i, want[i], got[i], got)
+		}
+	}
+}
+
+func TestDiscoverRepos_LinkedWorktreeIsExcluded(t *testing.T) {
+	root := t.TempDir()
+	mkGit(t, root)
+	// A linked worktree's .git file points into its main repo's own
+	// .git/worktrees/<name> — this is what a real `git worktree add` produces.
+	// The path is intentionally absolute with forward slashes, matching what
+	// git itself writes on Windows.
+	mkGitFile(t, filepath.Join(root, "wt-branch"), filepath.ToSlash(filepath.Join(root, ".git", "worktrees", "wt-branch")))
+
+	repos, err := workspace.DiscoverRepos(root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"."}
+	got := relPaths(repos)
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("want only the root repo (worktree excluded), got %v", got)
+	}
+}
+
+func TestDiscoverRepos_MalformedGitFileIsSkippedNotFatal(t *testing.T) {
+	root := t.TempDir()
+	mkGit(t, root)
+	if err := os.MkdirAll(filepath.Join(root, "broken"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "broken", ".git"), []byte("not a gitdir line\n"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	repos, err := workspace.DiscoverRepos(root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"."}
+	got := relPaths(repos)
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("want only the root repo (malformed .git skipped, not fatal), got %v", got)
+	}
+}
