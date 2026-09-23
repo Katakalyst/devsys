@@ -66,8 +66,13 @@ var authGitHubURL = "https://github.com"
 var authClaudeCmd = &cobra.Command{
 	Use:   "claude <project>",
 	Short: "Seed or reseed a project's own Claude Code credential volume",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			fmt.Println("Project name required. Usage: devsys auth claude <project>")
+			fmt.Println("  List projects: devsys list")
+			return nil
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("cannot determine home directory: %w", err)
@@ -79,8 +84,13 @@ var authClaudeCmd = &cobra.Command{
 var authCodexCmd = &cobra.Command{
 	Use:   "codex <project>",
 	Short: "Seed or reseed a project's own Codex credential volume",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			fmt.Println("Project name required. Usage: devsys auth codex <project>")
+			fmt.Println("  List projects: devsys list")
+			return nil
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("cannot determine home directory: %w", err)
@@ -179,7 +189,15 @@ func authSeedAgentVolume(volumeName, hostDir string, force bool) error {
 		prompt = fmt.Sprintf("Overwrite %s's existing credentials from %s?", volumeName, hostDir)
 	}
 	if !confirm(reader, prompt) {
-		fmt.Println("  Skipped.")
+		// Still create the volume if it doesn't exist — the user may want to
+		// log in from inside a 'devsys enter' session instead of seeding from
+		// the host, and that path needs the volume to already exist.
+		if !exists {
+			if _, err := podman.RunPodman("volume", "create", "--label", "devsys=true", volumeName); err != nil {
+				return fmt.Errorf("cannot create volume %s: %w", volumeName, err)
+			}
+		}
+		fmt.Println("  Skipped seeding from host. Log in from inside any 'devsys enter' session instead.")
 		return nil
 	}
 
