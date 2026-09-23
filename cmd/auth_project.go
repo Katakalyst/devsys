@@ -17,6 +17,7 @@ import (
 	"github.com/katakalyst/devsys/internal/podman"
 	"github.com/katakalyst/devsys/internal/workspace"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // authGitLabURL is the base URL a brand-new GitLab project is created
@@ -129,7 +130,7 @@ func runAuthProjectInteractive(projectName string) error {
 	if !changed {
 		return nil
 	}
-	return recreateContainerForAuth(projectName)
+	return recreateContainerForAuth(projectName, true)
 }
 
 // --- Scriptable form (Phase 5) ----------------------------------------------
@@ -165,6 +166,14 @@ func runAuthProjectScriptable(projectName string, extra []string) error {
 		return fmt.Errorf("only one of --create/--attach/--rotate/--remove may be given at a time")
 	}
 
+	// Spec §9's command syntax only lists [platform] on --create/--attach —
+	// --rotate/--remove/bare always derive platform from the existing
+	// remote. Rejecting it here rather than silently ignoring it catches a
+	// real mistake (e.g. a typo'd or stale platform arg) instead of masking it.
+	if platformArg != "" && !authScriptCreate && authScriptAttach == "" {
+		return fmt.Errorf("platform is not accepted with --rotate/--remove/the bare form — it's always derived from the existing remote")
+	}
+
 	containerName := fmt.Sprintf("devsys-%s", projectName)
 	if !podman.ContainerExists(containerName) {
 		return fmt.Errorf("container %s does not exist — run 'devsys init' first", containerName)
@@ -194,7 +203,21 @@ func runAuthProjectScriptable(projectName string, extra []string) error {
 	if !changed {
 		return nil
 	}
-	return recreateContainerForAuth(projectName)
+	// Still confirm when there's an actual TTY to confirm against — the
+	// spec's own reactive-auth flow has a human running this exact command
+	// at a terminal, container often still running. Skip it only when
+	// stdin genuinely isn't interactive (true unattended automation),
+	// where blocking on a confirmation would just hang forever.
+	return recreateContainerForAuth(projectName, isStdinInteractive())
+}
+
+// isStdinInteractive reports whether stdin is an actual terminal, not a
+// pipe/redirect/closed fd. Used only to decide whether the scriptable
+// form's container-recreation step can safely ask for confirmation — the
+// interactive listing form always passes true directly, since it's already
+// mid-conversation on stdin by definition.
+func isStdinInteractive() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // parseRepoAndPlatformArgs classifies devsys auth <project>'s remaining
@@ -1265,16 +1288,23 @@ func clearOriginRemote(repoPath string) error {
 // Recreation happens once per auth session (the caller only calls this
 // after the whole interactive loop finishes), and only asks for
 // confirmation if the container is actually running (Spec §9).
-func recreateContainerForAuth(projectName string) error {
+func recreateContainerForAuth(projectName string, interactive bool) error {
 	containerName := fmt.Sprintf("devsys-%s", projectName)
 
 	if podman.ContainerIsRunning(containerName) {
-		reader := bufio.NewReader(os.Stdin)
 		fmt.Printf("\nThis will recreate %s's container to mount new/changed credentials.\n", containerName)
-		fmt.Printf("%s is currently running (someone is inside it via 'devsys enter') — continuing\nwill end that session.", projectName)
-		if !confirm(reader, " Proceed?") {
-			fmt.Printf("  Skipped — credentials stored but not yet mounted. Run 'devsys auth %s' again, or 'devsys enter %s', to pick them up.\n", projectName, projectName)
-			return nil
+		fmt.Printf("%s is currently running (someone is inside it via 'devsys enter') — continuing\nwill end that session.\n", projectName)
+		if interactive {
+			reader := bufio.NewReader(os.Stdin)
+			if !confirm(reader, "Proceed?") {
+				fmt.Printf("  Skipped — credentials stored but not yet mounted. Run 'devsys auth %s' again, or 'devsys enter %s', to pick them up.\n", projectName, projectName)
+				return nil
+			}
+		} else {
+			// Scriptable form is meant to be non-interactive (Spec §9) — no
+			// TTY to confirm against, so proceed rather than block forever
+			// on a stdin read that will never come.
+			fmt.Println("Proceeding without confirmation (non-interactive).")
 		}
 		if _, err := podman.RunPodman("stop", containerName); err != nil {
 			return fmt.Errorf("cannot stop container: %w", err)

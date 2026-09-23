@@ -227,6 +227,71 @@ func TestSelectRepoForScriptable(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// runAuthProjectScriptable's early validation — both checks must fire
+// before any Podman/workspace call, so they're reachable in a unit test
+// even without a real container (Spec §9: a malformed invocation fails on
+// the actual mistake, not something unrelated that happens to run first).
+// ---------------------------------------------------------------------------
+
+func TestRunAuthProjectScriptable_RejectsMultipleOperationFlags(t *testing.T) {
+	resetAuthScriptFlags(t)
+	authScriptCreate = true
+	authScriptAttach = "owner/repo"
+
+	err := runAuthProjectScriptable("whatever-project", nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "only one of") {
+		t.Errorf("expected mutual-exclusion error, got %q", err.Error())
+	}
+}
+
+func TestRunAuthProjectScriptable_RejectsPlatformWithRotate(t *testing.T) {
+	resetAuthScriptFlags(t)
+	authScriptRotate = true
+
+	err := runAuthProjectScriptable("whatever-project", []string{"gitlab"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not accepted") {
+		t.Errorf("expected platform-not-accepted error, got %q", err.Error())
+	}
+}
+
+func TestRunAuthProjectScriptable_RejectsPlatformWithBareForm(t *testing.T) {
+	resetAuthScriptFlags(t)
+	// No operation flag set — the bare "ensure" form — still shouldn't
+	// accept a platform arg, same reasoning as --rotate/--remove.
+	err := runAuthProjectScriptable("whatever-project", []string{"frontend", "github"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not accepted") {
+		t.Errorf("expected platform-not-accepted error, got %q", err.Error())
+	}
+}
+
+// resetAuthScriptFlags clears every scriptable-form package-level flag
+// variable before and after a test that sets some of them, so tests don't
+// leak state into each other via cobra's shared global flag vars.
+func resetAuthScriptFlags(t *testing.T) {
+	t.Helper()
+	clear := func() {
+		authScriptCreate = false
+		authScriptAttach = ""
+		authScriptRotate = false
+		authScriptRemove = false
+		authScriptName = ""
+		authScriptToken = ""
+		authScriptForce = false
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
 func TestEmbedTokenInHTTPSURL(t *testing.T) {
 	cases := []struct {
 		rawURL, user, token, want string
