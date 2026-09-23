@@ -21,7 +21,15 @@ import (
 // or to reauthenticate after a logout).
 var authCmd = &cobra.Command{
 	Use:   "auth",
-	Short: "Manage shared Claude/Codex credentials and bootstrap platform PATs",
+	Short: "Manage shared Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials",
+	Long: `Manage shared Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials.
+
+  devsys auth claude|codex|gitlab|github [--force]   bootstrap subcommands, above
+  devsys auth <project>                              interactive per-repo credential listing for a project`,
+	// RunE handles the "devsys auth <project>" form — anything whose first
+	// argument isn't one of the bootstrap subcommand names above (Git Remote
+	// & Credential Spec §9).
+	RunE: runAuthProject,
 }
 
 var authClaudeForce bool
@@ -70,6 +78,8 @@ func init() {
 	authCodexCmd.Flags().BoolVar(&authCodexForce, "force", false, "Reseed even if the volume already has credentials, overwriting them")
 	authGitLabCmd.Flags().BoolVar(&authGitLabForce, "force", false, "Replace the existing bootstrap PAT secret")
 	authGitHubCmd.Flags().BoolVar(&authGitHubForce, "force", false, "Replace the existing bootstrap PAT secret")
+	authCmd.Flags().StringVar(&authGitLabURL, "gitlab-url", "https://gitlab.com",
+		"GitLab base URL to create/attach repos against (self-hosted instances supported)")
 
 	authCmd.AddCommand(authClaudeCmd)
 	authCmd.AddCommand(authCodexCmd)

@@ -56,20 +56,19 @@ func PlatformFromURL(remoteURL string) (string, error) {
 	return "gitlab", nil
 }
 
-// RepoIDFromURL derives the repo-id component used in Podman secret names
-// from a remote URL. The repo-id is the full owner/namespace + project path
-// after the host, with "/" replaced by "-" to satisfy Podman's naming rules
-// (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`, no slashes).
+// PathFromURL derives the un-flattened owner/namespace + project path from a
+// remote URL (e.g. "owner/project", or "group/subgroup/project" for a nested
+// GitLab group) — the real platform path, still containing "/". Used
+// anywhere that needs to display or reconstruct an actual platform path (API
+// calls, PAT-scope prompts), as opposed to RepoIDFromURL's Podman-safe,
+// flattened form.
 //
 // Handles all common URL forms:
 //   - HTTPS: https://gitlab.com/owner/project.git
 //   - HTTPS with embedded credentials: https://oauth2:TOKEN@gitlab.com/owner/project.git
 //   - SCP-style SSH: git@github.com:owner/repo.git
 //   - SSH URL: ssh://git@gitlab.com/owner/project.git
-//
-// GitLab nested subgroups (e.g. group/subgroup/project) are supported — the
-// full path is flattened, not truncated.
-func RepoIDFromURL(remoteURL string) (string, error) {
+func PathFromURL(remoteURL string) (string, error) {
 	var path string
 
 	if strings.HasPrefix(remoteURL, "git@") {
@@ -98,7 +97,21 @@ func RepoIDFromURL(remoteURL string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("cannot derive repo path from URL %q: path is empty", remoteURL)
 	}
+	return path, nil
+}
 
+// RepoIDFromURL derives the repo-id component used in Podman secret names
+// from a remote URL. The repo-id is PathFromURL's value with "/" replaced by
+// "-" to satisfy Podman's naming rules (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`, no
+// slashes).
+//
+// GitLab nested subgroups (e.g. group/subgroup/project) are supported — the
+// full path is flattened, not truncated.
+func RepoIDFromURL(remoteURL string) (string, error) {
+	path, err := PathFromURL(remoteURL)
+	if err != nil {
+		return "", err
+	}
 	// Flatten for Podman naming compatibility (spec §7: slashes rejected outright).
 	return strings.ReplaceAll(path, "/", "-"), nil
 }

@@ -102,3 +102,25 @@ func (c *Client) CreateRepo(name string) (repoID int, fullName string, err error
 	}
 	return result.ID, result.FullName, nil
 }
+
+// GetRepo verifies that owner/repo exists and is reachable with this
+// client's token. Used to validate an --attach target and the just-entered
+// fine-grained PAT together in one call — devsys never creates a GitHub
+// repo implicitly, but it must still surface a REST error directly rather
+// than silently accepting a typo'd owner/repo (Git Remote & Credential Spec
+// §9's error cases).
+func (c *Client) GetRepo(owner, repo string) error {
+	if c.DryRun {
+		fmt.Fprintf(os.Stdout, "[dry-run] GitHub GET /repos/%s/%s\n", owner, repo)
+		return nil
+	}
+	path := fmt.Sprintf("/repos/%s/%s", owner, repo)
+	body, status, err := c.do("GET", path, nil)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("GitHub get repo returned HTTP %d: %s", status, body)
+	}
+	return nil
+}

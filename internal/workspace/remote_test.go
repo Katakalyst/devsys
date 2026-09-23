@@ -2,6 +2,7 @@ package workspace_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -99,6 +100,60 @@ func TestRepoIDFromURL(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("RepoIDFromURL(%q): want %q, got %q", tc.url, tc.want, got)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PathFromURL
+// ---------------------------------------------------------------------------
+
+func TestPathFromURL(t *testing.T) {
+	cases := []struct {
+		url     string
+		want    string
+		wantErr bool
+	}{
+		{"https://gitlab.com/owner/project.git", "owner/project", false},
+		{"https://github.com/owner/repo.git", "owner/repo", false},
+		{"git@github.com:owner/repo.git", "owner/repo", false},
+		{"https://gitlab.com/group/subgroup/project.git", "group/subgroup/project", false},
+		{"https://oauth2:glpat-xxx@gitlab.com/owner/project.git", "owner/project", false},
+		{"https://github.com/", "", true},
+	}
+	for _, tc := range cases {
+		got, err := workspace.PathFromURL(tc.url)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("PathFromURL(%q): expected error, got %q", tc.url, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("PathFromURL(%q): unexpected error: %v", tc.url, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("PathFromURL(%q): want %q, got %q", tc.url, tc.want, got)
+		}
+	}
+}
+
+// RepoIDFromURL must stay the flattened form of PathFromURL — this is the
+// relationship the Podman-safe name and the real platform path both rely on
+// (Git Remote & Credential Spec §7).
+func TestRepoIDFromURL_MatchesFlattenedPath(t *testing.T) {
+	url := "https://gitlab.com/group/subgroup/project.git"
+	path, err := workspace.PathFromURL(url)
+	if err != nil {
+		t.Fatalf("PathFromURL: %v", err)
+	}
+	repoID, err := workspace.RepoIDFromURL(url)
+	if err != nil {
+		t.Fatalf("RepoIDFromURL: %v", err)
+	}
+	want := strings.ReplaceAll(path, "/", "-")
+	if repoID != want {
+		t.Errorf("RepoIDFromURL(%q) = %q, want flattened PathFromURL %q", url, repoID, want)
 	}
 }
 
