@@ -488,7 +488,12 @@ func promptCreateOrAttach(reader *bufio.Reader) (string, error) {
 // devsys no other way to validate either one ahead of time.
 func promptAndVerifyGitHubPAT(reader *bufio.Reader, ownerRepo string) (string, error) {
 	fmt.Printf("  Create a fine-grained PAT scoped to %s at github.com/settings/tokens?type=beta\n", ownerRepo)
-	fmt.Println("  Repository permissions needed: Contents: Read and write (git), plus Issues/Pull requests: Read and write if the agent will use gh for those. Do not grant Administration.")
+	fmt.Println("  Repository permissions needed (Metadata: Read-only is auto-selected with these):")
+	fmt.Println("    Contents:      Read and write  (git push/pull, releases, tags)")
+	fmt.Println("    Issues:        Read and write  (issues, comments, milestones)")
+	fmt.Println("    Pull requests: Read and write  (create, review, merge)")
+	fmt.Println("    Actions:       Read-only        (CI status and logs)")
+	fmt.Println("  Do not grant Administration — that's repo settings/collaborators, not covered by any devsys workflow.")
 	fmt.Print("  Enter PAT: ")
 	line, err := reader.ReadString('\n')
 	if err != nil && line == "" {
