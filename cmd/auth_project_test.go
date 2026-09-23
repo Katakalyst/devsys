@@ -622,6 +622,468 @@ func TestRecreateContainerForAuth_DeclinedExplainsRealRecoveryPath(t *testing.T)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// writeRemote / clearRemote — pure go-git operations
+// ---------------------------------------------------------------------------
+
+func TestWriteRemote_CreatesAndUpdates(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := gogit.PlainInit(dir, false); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	if err := writeRemote(dir, "origin", "https://github.com/owner/repo.git"); err != nil {
+		t.Fatalf("writeRemote: %v", err)
+	}
+
+	repo, err := gogit.PlainOpen(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	cfg, err := repo.Config()
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rem, ok := cfg.Remotes["origin"]
+	if !ok {
+		t.Fatal("remote 'origin' not found after writeRemote")
+	}
+	if rem.URLs[0] != "https://github.com/owner/repo.git" {
+		t.Errorf("want URL %q, got %q", "https://github.com/owner/repo.git", rem.URLs[0])
+	}
+
+	// Overwrite with a new URL.
+	if err := writeRemote(dir, "origin", "https://gitlab.com/owner/repo.git"); err != nil {
+		t.Fatalf("writeRemote overwrite: %v", err)
+	}
+	cfg, _ = repo.Config()
+	if cfg.Remotes["origin"].URLs[0] != "https://gitlab.com/owner/repo.git" {
+		t.Errorf("overwrite: want gitlab URL, got %q", cfg.Remotes["origin"].URLs[0])
+	}
+}
+
+func TestClearRemote_RemovesRemote(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, err := repo.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{"https://github.com/owner/repo.git"}}); err != nil {
+		t.Fatalf("create remote: %v", err)
+	}
+
+	if err := clearRemote(dir, "origin"); err != nil {
+		t.Fatalf("clearRemote: %v", err)
+	}
+
+	cfg, _ := repo.Config()
+	if _, ok := cfg.Remotes["origin"]; ok {
+		t.Error("remote 'origin' still present after clearRemote")
+	}
+}
+
+func TestClearRemote_NonexistentIsNoError(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := gogit.PlainInit(dir, false); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := clearRemote(dir, "doesnotexist"); err != nil {
+		t.Errorf("clearRemote nonexistent remote: expected no error, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// storeRepoSecret — creates/overwrites via podman secret create/rm
+// ---------------------------------------------------------------------------
+
+func TestStoreRepoSecret_CreatesWhenAbsent(t *testing.T) {
+	rec := podmanfake.Install(t, podmanfake.Options{SecretExists: false})
+
+	if err := storeRepoSecret("my-secret", "token-value", map[string]string{"devsys.expires-at": "2027-01-01"}); err != nil {
+		t.Fatalf("storeRepoSecret: %v", err)
+	}
+
+	// Must call secret create, must not call secret rm (nothing to delete).
+	if !rec.HasCall("secret", "create", "my-secret") {
+		t.Errorf("expected podman secret create; calls: %v", rec.Calls())
+	}
+	if rec.HasSubcommand("rm") {
+		t.Errorf("should not rm when secret doesn't exist; calls: %v", rec.Calls())
+	}
+}
+
+func TestStoreRepoSecret_DeletesBeforeRecreate(t *testing.T) {
+	rec := podmanfake.Install(t, podmanfake.Options{SecretExists: true})
+
+	if err := storeRepoSecret("existing-secret", "new-token", nil); err != nil {
+		t.Fatalf("storeRepoSecret: %v", err)
+	}
+
+	// rm must precede create.
+	if !rec.HasCall("secret", "rm", "existing-secret") {
+		t.Errorf("expected podman secret rm; calls: %v", rec.Calls())
+	}
+	if !rec.HasCall("secret", "create", "existing-secret") {
+		t.Errorf("expected podman secret create; calls: %v", rec.Calls())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// revokeAndDeleteSecret — no-secret and github paths
+// ---------------------------------------------------------------------------
+
+func TestRevokeAndDeleteSecret_NoSecretIsNoOp(t *testing.T) {
+	rec := podmanfake.Install(t, podmanfake.Options{SecretExists: false})
+
+	st := &repoAuthStatus{Platform: "github", SecretName: "", HasToken: false}
+	if err := revokeAndDeleteSecret(st); err != nil {
+		t.Fatalf("revokeAndDeleteSecret: %v", err)
+	}
+
+	if rec.HasSubcommand("rm") {
+		t.Errorf("should not call podman secret rm when SecretName is empty; calls: %v", rec.Calls())
+	}
+}
+
+func TestRevokeAndDeleteSecret_GitHubPrintsReminderAndDeletes(t *testing.T) {
+	podmanfake.Install(t, podmanfake.Options{SecretExists: true})
+	flush := captureStdout(t)
+
+	st := &repoAuthStatus{
+		Platform:   "github",
+		RemoteURL:  "https://github.com/owner/repo.git",
+		SecretName: "devsys-foo-owner-repo-github-token",
+		HasToken:   true,
+	}
+	if err := revokeAndDeleteSecret(st); err != nil {
+		t.Fatalf("revokeAndDeleteSecret: %v", err)
+	}
+
+	out := flush()
+	if !strings.Contains(out, "revoke") {
+		t.Errorf("expected revoke reminder in output, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// scriptableRemove
+// ---------------------------------------------------------------------------
+
+func TestScriptableRemove_NoTokenIsNoOp(t *testing.T) {
+	podmanfake.Install(t, podmanfake.Options{SecretExists: false})
+	flush := captureStdout(t)
+
+	st := &repoAuthStatus{Repo: workspace.Repo{RelPath: "."}, HasToken: false}
+	changed, err := scriptableRemove(st)
+	out := flush()
+	if err != nil {
+		t.Fatalf("scriptableRemove: %v", err)
+	}
+	if changed {
+		t.Error("expected changed=false when no token to remove")
+	}
+	if !strings.Contains(out, "no token to remove") {
+		t.Errorf("expected 'no token to remove' in output, got %q", out)
+	}
+}
+
+func TestScriptableRemove_WithToken_RemovesAndReturnsChanged(t *testing.T) {
+	podmanfake.Install(t, podmanfake.Options{SecretExists: true})
+	flush := captureStdout(t)
+
+	st := &repoAuthStatus{
+		Repo:       workspace.Repo{RelPath: "."},
+		Platform:   "github",
+		RemoteURL:  "https://github.com/owner/repo.git",
+		SecretName: "devsys-foo-owner-repo-github-token",
+		HasToken:   true,
+	}
+	changed, err := scriptableRemove(st)
+	flush()
+	if err != nil {
+		t.Fatalf("scriptableRemove: %v", err)
+	}
+	if !changed {
+		t.Error("expected changed=true after removing token")
+	}
+	if st.HasToken || st.SecretName != "" {
+		t.Errorf("st not updated after remove: HasToken=%v SecretName=%q", st.HasToken, st.SecretName)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// scriptableEnsure
+// ---------------------------------------------------------------------------
+
+func TestScriptableEnsure_NoRemoteErrors(t *testing.T) {
+	podmanfake.Install(t, podmanfake.Options{})
+
+	st := &repoAuthStatus{Repo: workspace.Repo{RelPath: "myrepo"}, HasRemote: false}
+	_, err := scriptableEnsure("proj", st)
+	if err == nil {
+		t.Fatal("expected error when repo has no remote")
+	}
+	if !strings.Contains(err.Error(), "--create") {
+		t.Errorf("expected error to mention --create, got %q", err.Error())
+	}
+}
+
+func TestScriptableEnsure_AlreadyConfiguredPrintsStatus(t *testing.T) {
+	podmanfake.Install(t, podmanfake.Options{})
+	flush := captureStdout(t)
+
+	st := &repoAuthStatus{
+		Repo:      workspace.Repo{RelPath: "myrepo"},
+		HasRemote: true,
+		HasToken:  true,
+		Platform:  "gitlab",
+		ExpiresAt: "",
+	}
+	changed, err := scriptableEnsure("proj", st)
+	out := flush()
+	if err != nil {
+		t.Fatalf("scriptableEnsure: %v", err)
+	}
+	if changed {
+		t.Error("expected changed=false when already configured")
+	}
+	if !strings.Contains(out, "already configured") {
+		t.Errorf("expected 'already configured' in output, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runScriptableOperation dispatch
+// ---------------------------------------------------------------------------
+
+func TestRunScriptableOperation_RemoveNoToken(t *testing.T) {
+	resetAuthScriptFlags(t)
+	authScriptRemove = true
+	podmanfake.Install(t, podmanfake.Options{})
+	flush := captureStdout(t)
+
+	st := &repoAuthStatus{Repo: workspace.Repo{RelPath: "."}, HasToken: false}
+	changed, err := runScriptableOperation("proj", st, "")
+	flush()
+	if err != nil {
+		t.Fatalf("runScriptableOperation --remove no token: %v", err)
+	}
+	if changed {
+		t.Error("expected changed=false for --remove with no token")
+	}
+}
+
+func TestRunScriptableOperation_RotateNoToken_Errors(t *testing.T) {
+	resetAuthScriptFlags(t)
+	authScriptRotate = true
+	podmanfake.Install(t, podmanfake.Options{})
+
+	st := &repoAuthStatus{Repo: workspace.Repo{RelPath: "."}, HasToken: false}
+	_, err := runScriptableOperation("proj", st, "")
+	if err == nil {
+		t.Fatal("expected error for --rotate with no token")
+	}
+}
+
+func TestRunScriptableOperation_CreateMissingPlatform_Errors(t *testing.T) {
+	resetAuthScriptFlags(t)
+	authScriptCreate = true
+	podmanfake.Install(t, podmanfake.Options{})
+
+	st := &repoAuthStatus{Repo: workspace.Repo{RelPath: "."}, HasRemote: false}
+	_, err := runScriptableOperation("proj", st, "") // platformArg = ""
+	if err == nil {
+		t.Fatal("expected error for --create without platform")
+	}
+	if !strings.Contains(err.Error(), "platform is required") {
+		t.Errorf("expected platform-required error, got %q", err.Error())
+	}
+}
+
+func TestRunScriptableOperation_DefaultEnsureNoRemote_Errors(t *testing.T) {
+	resetAuthScriptFlags(t)
+	podmanfake.Install(t, podmanfake.Options{})
+
+	st := &repoAuthStatus{Repo: workspace.Repo{RelPath: "."}, HasRemote: false}
+	_, err := runScriptableOperation("proj", st, "")
+	if err == nil {
+		t.Fatal("expected error for bare ensure with no remote")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// printRepoListing — multi-remote shows remote name in parens
+// ---------------------------------------------------------------------------
+
+func TestPrintRepoListing_SingleRemote_NoParens(t *testing.T) {
+	flush := captureStdout(t)
+	statuses := []repoAuthStatus{
+		{Repo: workspace.Repo{RelPath: "myrepo"}, RemoteName: "origin", HasRemote: true, HasToken: true, Platform: "github"},
+	}
+	printRepoListing(statuses)
+	out := flush()
+	if strings.Contains(out, "(") {
+		t.Errorf("single-remote repo should not show remote name in parens, got %q", out)
+	}
+	if !strings.Contains(out, "myrepo") {
+		t.Errorf("expected repo path in output, got %q", out)
+	}
+}
+
+func TestPrintRepoListing_MultiRemote_ShowsRemoteNameInParens(t *testing.T) {
+	flush := captureStdout(t)
+	statuses := []repoAuthStatus{
+		{Repo: workspace.Repo{RelPath: "myrepo"}, RemoteName: "origin", HasRemote: true, HasToken: true, Platform: "github"},
+		{Repo: workspace.Repo{RelPath: "myrepo"}, RemoteName: "upstream", HasRemote: true, HasToken: false, Platform: "gitlab"},
+	}
+	printRepoListing(statuses)
+	out := flush()
+	if !strings.Contains(out, "(origin)") {
+		t.Errorf("expected '(origin)' for multi-remote repo, got %q", out)
+	}
+	if !strings.Contains(out, "(upstream)") {
+		t.Errorf("expected '(upstream)' for multi-remote repo, got %q", out)
+	}
+}
+
+func TestPrintRepoListing_NoRemote(t *testing.T) {
+	flush := captureStdout(t)
+	statuses := []repoAuthStatus{
+		{Repo: workspace.Repo{RelPath: "myrepo"}, HasRemote: false},
+	}
+	printRepoListing(statuses)
+	out := flush()
+	if !strings.Contains(out, "no remote") {
+		t.Errorf("expected 'no remote' in output, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// gatherRepoStatuses — HasToken + ExpiresAt path
+// ---------------------------------------------------------------------------
+
+func TestGatherRepoStatuses_WithTokenAndExpiresAt(t *testing.T) {
+	root := t.TempDir()
+	initTestRepoWithOrigin(t, root, "https://github.com/owner/app.git")
+
+	podmanfake.Install(t, podmanfake.Options{
+		SecretExists:    true,
+		SecretExpiresAt: "2027-06-01",
+	})
+	statuses, err := gatherRepoStatuses("foo", root)
+	if err != nil {
+		t.Fatalf("gatherRepoStatuses: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("want 1 status, got %d", len(statuses))
+	}
+	st := statuses[0]
+	if !st.HasToken {
+		t.Error("expected HasToken=true")
+	}
+	if st.ExpiresAt != "2027-06-01" {
+		t.Errorf("expected ExpiresAt=%q, got %q", "2027-06-01", st.ExpiresAt)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// recreateContainerForAuth — not-running path and non-interactive running path
+// ---------------------------------------------------------------------------
+
+func TestRecreateContainerForAuth_NotRunning_SkipsStop(t *testing.T) {
+	rec := podmanfake.Install(t, podmanfake.Options{
+		ContainerExists:  true,
+		ContainerRunning: false,
+		ProjectPath:      t.TempDir(),
+	})
+
+	if err := recreateContainerForAuth("testproject", true); err != nil {
+		t.Fatalf("recreateContainerForAuth: %v", err)
+	}
+
+	if rec.HasSubcommand("stop") {
+		t.Errorf("should not call podman stop when container is not running; calls: %v", rec.Calls())
+	}
+	if !rec.HasSubcommand("rm") {
+		t.Errorf("expected podman rm; calls: %v", rec.Calls())
+	}
+	if !rec.HasSubcommand("create") {
+		t.Errorf("expected podman create; calls: %v", rec.Calls())
+	}
+}
+
+func TestRecreateContainerForAuth_RunningNonInteractive_ProceedsWithoutConfirm(t *testing.T) {
+	rec := podmanfake.Install(t, podmanfake.Options{
+		ContainerExists:  true,
+		ContainerRunning: true,
+		ProjectPath:      t.TempDir(),
+	})
+	flush := captureStdout(t)
+
+	if err := recreateContainerForAuth("testproject", false); err != nil {
+		t.Fatalf("recreateContainerForAuth: %v", err)
+	}
+	out := flush()
+
+	if !strings.Contains(out, "non-interactive") {
+		t.Errorf("expected non-interactive message in output, got %q", out)
+	}
+	if !rec.HasSubcommand("stop") {
+		t.Errorf("expected podman stop; calls: %v", rec.Calls())
+	}
+	if !rec.HasSubcommand("rm") {
+		t.Errorf("expected podman rm; calls: %v", rec.Calls())
+	}
+	if !rec.HasSubcommand("create") {
+		t.Errorf("expected podman create; calls: %v", rec.Calls())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// gitLabClient — errors when bootstrap PAT is missing
+// ---------------------------------------------------------------------------
+
+func TestGitLabClient_MissingBootstrapPAT_Errors(t *testing.T) {
+	podmanfake.Install(t, podmanfake.Options{SecretExists: false})
+
+	_, err := gitLabClient()
+	if err == nil {
+		t.Fatal("expected error when bootstrap PAT missing")
+	}
+	if !strings.Contains(err.Error(), "devsys auth gitlab") {
+		t.Errorf("expected error to mention 'devsys auth gitlab', got %q", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runAuthProjectScriptable end-to-end — "no change needed" path:
+// container exists + project path set + git repo with remote + secret exists
+// → scriptableEnsure returns (false, nil)
+// ---------------------------------------------------------------------------
+
+func TestRunAuthProjectScriptable_NoChangeNeeded(t *testing.T) {
+	resetAuthScriptFlags(t)
+
+	root := t.TempDir()
+	initTestRepoWithOrigin(t, root, "https://github.com/owner/app.git")
+
+	podmanfake.Install(t, podmanfake.Options{
+		ContainerExists: true,
+		ProjectPath:     root,
+		SecretExists:    true,
+	})
+	flush := captureStdout(t)
+
+	err := runAuthProjectScriptable("myproject", nil)
+	out := flush()
+	if err != nil {
+		t.Fatalf("runAuthProjectScriptable: %v", err)
+	}
+	if !strings.Contains(out, "already configured") {
+		t.Errorf("expected 'already configured' in output, got %q", out)
+	}
+}
+
 func initTestRepoWithOrigin(t *testing.T, path, remoteURL string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
