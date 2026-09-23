@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"io"
 	"os"
 	"path/filepath"
@@ -98,6 +99,61 @@ func containsWarning(s string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// githubExpiresAtLabels / promptGitHubExpiresAt — self-reported GitHub PAT
+// expiry (GitHub's API never exposes it), stored under the same
+// devsys.expires-at label GitLab's own minted tokens carry so
+// tokenExpiryText's existing warning works for GitHub too.
+// ---------------------------------------------------------------------------
+
+func TestGithubExpiresAtLabels(t *testing.T) {
+	labels, err := githubExpiresAtLabels("")
+	if err != nil || labels != nil {
+		t.Errorf("blank input: want (nil, nil), got (%v, %v)", labels, err)
+	}
+
+	labels, err = githubExpiresAtLabels("2027-01-15")
+	if err != nil {
+		t.Fatalf("valid date: unexpected error: %v", err)
+	}
+	if labels["devsys.expires-at"] != "2027-01-15" {
+		t.Errorf("valid date: want label 2027-01-15, got %v", labels)
+	}
+
+	if _, err := githubExpiresAtLabels("not-a-date"); err == nil {
+		t.Error("malformed date: expected error, got nil")
+	}
+	if _, err := githubExpiresAtLabels("01/15/2027"); err == nil {
+		t.Error("wrong format date: expected error, got nil")
+	}
+}
+
+func TestPromptGitHubExpiresAt(t *testing.T) {
+	// Blank answer -> nil labels, no error, no re-prompt.
+	labels, err := promptGitHubExpiresAt(bufio.NewReader(strings.NewReader("\n")))
+	if err != nil || labels != nil {
+		t.Errorf("blank answer: want (nil, nil), got (%v, %v)", labels, err)
+	}
+
+	// Valid date -> stored under the shared label key.
+	labels, err = promptGitHubExpiresAt(bufio.NewReader(strings.NewReader("2027-06-01\n")))
+	if err != nil {
+		t.Fatalf("valid date: unexpected error: %v", err)
+	}
+	if labels["devsys.expires-at"] != "2027-06-01" {
+		t.Errorf("valid date: want label 2027-06-01, got %v", labels)
+	}
+
+	// Malformed input is reprompted, not rejected outright.
+	labels, err = promptGitHubExpiresAt(bufio.NewReader(strings.NewReader("nonsense\n2027-06-01\n")))
+	if err != nil {
+		t.Fatalf("reprompt after malformed input: unexpected error: %v", err)
+	}
+	if labels["devsys.expires-at"] != "2027-06-01" {
+		t.Errorf("reprompt after malformed input: want label 2027-06-01, got %v", labels)
+	}
 }
 
 // ---------------------------------------------------------------------------

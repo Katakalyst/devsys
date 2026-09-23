@@ -29,13 +29,14 @@ var authGitLabURL string
 // here alongside the code that reads them; registered on authCmd in
 // cmd/auth.go's init(), same split already used for authGitLabURL above.
 var (
-	authScriptCreate bool
-	authScriptAttach string
-	authScriptRotate bool
-	authScriptRemove bool
-	authScriptName   string
-	authScriptToken  string
-	authScriptForce  bool
+	authScriptCreate    bool
+	authScriptAttach    string
+	authScriptRotate    bool
+	authScriptRemove    bool
+	authScriptName      string
+	authScriptToken     string
+	authScriptExpiresAt string
+	authScriptForce     bool
 )
 
 // tokenExpiryWarnDays is the same 30-day threshold devsys enter's
@@ -385,7 +386,7 @@ func scriptableCreateOrAttach(projectName string, st *repoAuthStatus, mode, name
 	case "gitlab":
 		remoteURL, tokenValue, labels, err = setupGitLabRemoteScriptable(projectName, st, mode, nameOrTarget)
 	case "github":
-		remoteURL, tokenValue, err = setupGitHubRemoteScriptable(projectName, st, mode, nameOrTarget, authScriptToken)
+		remoteURL, tokenValue, labels, err = setupGitHubRemoteScriptable(projectName, st, mode, nameOrTarget, authScriptToken, authScriptExpiresAt)
 	default:
 		return false, fmt.Errorf("unknown platform %q — must be gitlab or github", platformArg)
 	}
@@ -444,6 +445,10 @@ func scriptableRotate(st *repoAuthStatus) (bool, error) {
 		}
 		if err := verifyGitHubPAT(repoPath, authScriptToken); err != nil {
 			return false, fmt.Errorf("cannot verify %s with this PAT: %w", repoPath, err)
+		}
+		labels, err = githubExpiresAtLabels(authScriptExpiresAt)
+		if err != nil {
+			return false, err
 		}
 		tokenValue = authScriptToken
 		userInfo = "x-access-token"
@@ -527,6 +532,10 @@ func scriptableEnsureToken(projectName string, st *repoAuthStatus) (bool, error)
 		}
 		if verifyErr := verifyGitHubPAT(repoPath, authScriptToken); verifyErr != nil {
 			return false, fmt.Errorf("cannot verify %s with this PAT: %w", repoPath, verifyErr)
+		}
+		labels, err = githubExpiresAtLabels(authScriptExpiresAt)
+		if err != nil {
+			return false, err
 		}
 		tokenValue = authScriptToken
 	}
@@ -709,7 +718,7 @@ func configureNoRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 	case "gitlab":
 		remoteURL, tokenValue, labels, err = setupGitLabRemote(reader, projectName, st, mode)
 	case "github":
-		remoteURL, tokenValue, err = setupGitHubRemote(reader, projectName, st, mode)
+		remoteURL, tokenValue, labels, err = setupGitHubRemote(reader, projectName, st, mode)
 	}
 	if err != nil {
 		return false, err
@@ -762,7 +771,7 @@ func configureRemoteNoToken(reader *bufio.Reader, projectName string, st *repoAu
 		if pathErr != nil {
 			return false, fmt.Errorf("cannot determine owner/repo: %w", pathErr)
 		}
-		tokenValue, err = promptAndVerifyGitHubPAT(reader, repoPath)
+		tokenValue, labels, err = promptAndVerifyGitHubPAT(reader, repoPath)
 	}
 	if err != nil {
 		return false, err
@@ -861,21 +870,21 @@ func rotateRepoToken(reader *bufio.Reader, st *repoAuthStatus) (bool, error) {
 		st.ExpiresAt = labels["devsys.expires-at"]
 		fmt.Printf("  -> new token minted (expires %s)\n", st.ExpiresAt)
 	case "github":
-		fmt.Println("  GitHub fine-grained PATs can't be rotated via API — create a new one, then paste it below.")
-		fmt.Println("  Remember to revoke the old PAT yourself at github.com/settings/tokens once the new one is confirmed working.")
 		repoPath, err := workspace.PathFromURL(st.RemoteURL)
 		if err != nil {
 			return false, fmt.Errorf("cannot determine owner/repo: %w", err)
 		}
-		tokenValue, err = promptAndVerifyGitHubPAT(reader, repoPath)
+		fmt.Println("  GitHub fine-grained PATs can't be rotated via API — create a new one, then paste it below.")
+		fmt.Printf("  Once the new one is confirmed working, revoke the old PAT for %s yourself: %s\n", repoPath, githubTokensBetaURL)
+		tokenValue, labels, err = promptAndVerifyGitHubPAT(reader, repoPath)
 		if err != nil {
 			return false, err
 		}
 		userInfo = "x-access-token"
-		if err := storeRepoSecret(st.SecretName, tokenValue, nil); err != nil {
+		if err := storeRepoSecret(st.SecretName, tokenValue, labels); err != nil {
 			return false, err
 		}
-		st.ExpiresAt = ""
+		st.ExpiresAt = labels["devsys.expires-at"]
 		fmt.Println("  -> new token stored")
 	}
 	st.HasToken = true
@@ -933,7 +942,7 @@ func revokeAndDeleteSecret(st *repoAuthStatus) error {
 			fmt.Fprintf(os.Stderr, "  Warning: could not revoke GitLab token via API: %v\n", err)
 		}
 	case "github":
-		fmt.Println("  Remember to revoke the old fine-grained PAT yourself at github.com/settings/tokens.")
+		fmt.Println(githubManualRevokeReminder(st.RemoteURL))
 	}
 	if st.SecretName != "" && podman.SecretExists(st.SecretName) {
 		if err := podman.DeleteSecret(st.SecretName); err != nil {
@@ -941,6 +950,28 @@ func revokeAndDeleteSecret(st *repoAuthStatus) error {
 		}
 	}
 	return nil
+}
+
+// githubTokensBetaURL is GitHub's fine-grained token list — the list devsys
+// actually needs, every time it points a user at github.com to manage one of
+// these by hand. A bare github.com/settings/tokens is GitHub's *classic*
+// token list, the wrong one for anything devsys mounts (Git Remote &
+// Credential Spec §7: GitHub credentials are always fine-grained PATs).
+const githubTokensBetaURL = "github.com/settings/tokens?type=beta"
+
+// githubManualRevokeReminder formats the standard reminder shown wherever a
+// GitHub fine-grained PAT is replaced or removed. devsys never mints these
+// (user-created, pasted into `--attach`), so it has no API to revoke them
+// either, and GitHub never hands back an ID devsys could deep-link to
+// directly — the best it can do is name the exact repo the token was scoped
+// to, which is what a fine-grained token's own row on githubTokensBetaURL's
+// list shows, so the user can pick out the right one without guessing by name.
+func githubManualRevokeReminder(remoteURL string) string {
+	ownerRepo, err := workspace.PathFromURL(remoteURL)
+	if err != nil {
+		return "  Remember to revoke the old fine-grained PAT yourself: " + githubTokensBetaURL
+	}
+	return fmt.Sprintf("  Remember to revoke the old fine-grained PAT for %s yourself: %s", ownerRepo, githubTokensBetaURL)
 }
 
 // --- Prompts ---------------------------------------------------------------
@@ -979,9 +1010,15 @@ func promptCreateOrAttach(reader *bufio.Reader) (string, error) {
 // owner/repo and verifies it against that repo before accepting it — this
 // is what surfaces a REST error directly for a typo'd --attach target or a
 // PAT with the wrong scope (Spec §9's error cases), since GitHub gives
-// devsys no other way to validate either one ahead of time.
-func promptAndVerifyGitHubPAT(reader *bufio.Reader, ownerRepo string) (string, error) {
-	fmt.Printf("  Create a fine-grained PAT scoped to %s at github.com/settings/tokens?type=beta\n", ownerRepo)
+// devsys no other way to validate either one ahead of time. It also asks
+// what expiration the user set when creating it on github.com — GitHub's
+// API never exposes that back to devsys, so this is self-reported, not
+// verified, but it's what lets the existing 30-day expiry warning (already
+// working for GitLab, whose expiry devsys mints and therefore knows for
+// certain) start working for GitHub too, instead of always silently
+// showing "token ok" regardless of how close the real expiry actually is.
+func promptAndVerifyGitHubPAT(reader *bufio.Reader, ownerRepo string) (token string, labels map[string]string, err error) {
+	fmt.Printf("  Create a fine-grained PAT scoped to %s at %s\n", ownerRepo, githubTokensBetaURL)
 	fmt.Println("  Repository permissions needed (Metadata: Read-only is auto-selected with these):")
 	fmt.Println("    Contents:      Read and write  (git push/pull, releases, tags)")
 	fmt.Println("    Issues:        Read and write  (issues, comments, milestones)")
@@ -989,18 +1026,64 @@ func promptAndVerifyGitHubPAT(reader *bufio.Reader, ownerRepo string) (string, e
 	fmt.Println("    Actions:       Read-only        (CI status and logs)")
 	fmt.Println("  Do not grant Administration — that's repo settings/collaborators, not covered by any devsys workflow.")
 	fmt.Print("  Enter PAT: ")
-	line, err := reader.ReadString('\n')
-	if err != nil && line == "" {
-		return "", fmt.Errorf("cannot read PAT: %w", err)
+	line, readErr := reader.ReadString('\n')
+	if readErr != nil && line == "" {
+		return "", nil, fmt.Errorf("cannot read PAT: %w", readErr)
 	}
 	pat := strings.TrimSpace(line)
 	if pat == "" {
-		return "", fmt.Errorf("PAT cannot be empty")
+		return "", nil, fmt.Errorf("PAT cannot be empty")
 	}
 	if err := verifyGitHubPAT(ownerRepo, pat); err != nil {
-		return "", fmt.Errorf("cannot verify %s with this PAT: %w", ownerRepo, err)
+		return "", nil, fmt.Errorf("cannot verify %s with this PAT: %w", ownerRepo, err)
 	}
-	return pat, nil
+	labels, err = promptGitHubExpiresAt(reader)
+	if err != nil {
+		return "", nil, err
+	}
+	return pat, labels, nil
+}
+
+// promptGitHubExpiresAt asks what expiration the user picked on github.com
+// when they created the PAT just entered, and returns it as the same
+// devsys.expires-at label GitLab's own minted tokens already carry — one
+// label key, one warning threshold, one display path (tokenExpiryText),
+// regardless of platform. Blank is accepted and means either "No
+// expiration" was chosen on github.com, or the user doesn't know/didn't
+// say — either way, devsys still shows "token ok" with no warning for it,
+// exactly like before this existed, rather than treating a blank answer as
+// an error.
+func promptGitHubExpiresAt(reader *bufio.Reader) (map[string]string, error) {
+	for {
+		fmt.Print("  What expiration did you set for this token on github.com? (YYYY-MM-DD, or blank for \"No expiration\"/unknown): ")
+		line, err := reader.ReadString('\n')
+		if err != nil && line == "" {
+			return nil, fmt.Errorf("cannot read input: %w", err)
+		}
+		s := strings.TrimSpace(line)
+		if s == "" {
+			return nil, nil
+		}
+		if _, err := time.Parse("2006-01-02", s); err != nil {
+			fmt.Println("  Please enter a date as YYYY-MM-DD, or leave blank.")
+			continue
+		}
+		return map[string]string{"devsys.expires-at": s}, nil
+	}
+}
+
+// githubExpiresAtLabels is promptGitHubExpiresAt's non-interactive
+// counterpart: validates --expires-at instead of prompting (the scriptable
+// form never prompts). Blank is accepted, same meaning as a blank prompt
+// answer — "No expiration" or unknown, not an error.
+func githubExpiresAtLabels(expiresAt string) (map[string]string, error) {
+	if expiresAt == "" {
+		return nil, nil
+	}
+	if _, err := time.Parse("2006-01-02", expiresAt); err != nil {
+		return nil, fmt.Errorf("--expires-at must be YYYY-MM-DD, got %q", expiresAt)
+	}
+	return map[string]string{"devsys.expires-at": expiresAt}, nil
 }
 
 // verifyGitHubPAT checks a fine-grained PAT against a specific owner/repo —
@@ -1210,12 +1293,12 @@ func githubBootstrapClient() (*github.Client, error) {
 	return github.NewClient(bootstrapPAT), nil
 }
 
-func setupGitHubRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus, mode string) (remoteURL, tokenValue string, err error) {
+func setupGitHubRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus, mode string) (remoteURL, tokenValue string, labels map[string]string, err error) {
 	var ownerRepo string
 	if mode == "create" {
 		bootstrapClient, err := githubBootstrapClient()
 		if err != nil {
-			return "", "", err
+			return "", "", nil, err
 		}
 
 		defaultName := repoDefaultName(projectName, st.Repo.RelPath)
@@ -1227,7 +1310,7 @@ func setupGitHubRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 		}
 		_, fullName, err := bootstrapClient.CreateRepo(name)
 		if err != nil {
-			return "", "", fmt.Errorf("cannot create GitHub repo: %w", err)
+			return "", "", nil, fmt.Errorf("cannot create GitHub repo: %w", err)
 		}
 		fmt.Printf("  -> created https://github.com/%s\n", fullName)
 		ownerRepo = fullName
@@ -1236,31 +1319,32 @@ func setupGitHubRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 		line, _ := reader.ReadString('\n')
 		ownerRepo = strings.TrimSpace(line)
 		if ownerRepo == "" {
-			return "", "", fmt.Errorf("owner/repo cannot be empty")
+			return "", "", nil, fmt.Errorf("owner/repo cannot be empty")
 		}
 	}
 
-	tokenValue, err = promptAndVerifyGitHubPAT(reader, ownerRepo)
+	tokenValue, labels, err = promptAndVerifyGitHubPAT(reader, ownerRepo)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	remoteURL, err = embedTokenInHTTPSURL("https://github.com/"+ownerRepo, "x-access-token", tokenValue)
 	if err != nil {
-		return "", "", fmt.Errorf("cannot build remote URL: %w", err)
+		return "", "", nil, fmt.Errorf("cannot build remote URL: %w", err)
 	}
 	fmt.Println("  -> attached, remote wired")
-	return remoteURL, tokenValue, nil
+	return remoteURL, tokenValue, labels, nil
 }
 
 // setupGitHubRemoteScriptable is setupGitHubRemote's non-interactive
-// counterpart: nameOrTarget comes from --name/--attach and the PAT from
-// --token, never prompted (Spec §9: the scriptable form never prompts).
-func setupGitHubRemoteScriptable(projectName string, st *repoAuthStatus, mode, nameOrTarget, token string) (remoteURL, tokenValue string, err error) {
+// counterpart: nameOrTarget comes from --name/--attach, the PAT from
+// --token, and its expiration from --expires-at — never prompted (Spec §9:
+// the scriptable form never prompts).
+func setupGitHubRemoteScriptable(projectName string, st *repoAuthStatus, mode, nameOrTarget, token, expiresAt string) (remoteURL, tokenValue string, labels map[string]string, err error) {
 	var ownerRepo string
 	if mode == "create" {
 		bootstrapClient, err := githubBootstrapClient()
 		if err != nil {
-			return "", "", err
+			return "", "", nil, err
 		}
 		name := nameOrTarget
 		if name == "" {
@@ -1268,27 +1352,31 @@ func setupGitHubRemoteScriptable(projectName string, st *repoAuthStatus, mode, n
 		}
 		_, fullName, err := bootstrapClient.CreateRepo(name)
 		if err != nil {
-			return "", "", fmt.Errorf("cannot create GitHub repo: %w", err)
+			return "", "", nil, fmt.Errorf("cannot create GitHub repo: %w", err)
 		}
 		ownerRepo = fullName
 	} else {
 		ownerRepo = nameOrTarget
 		if ownerRepo == "" {
-			return "", "", fmt.Errorf("--attach requires a target (owner/repo)")
+			return "", "", nil, fmt.Errorf("--attach requires a target (owner/repo)")
 		}
 	}
 
 	if token == "" {
-		return "", "", fmt.Errorf("--token is required for GitHub in non-interactive mode")
+		return "", "", nil, fmt.Errorf("--token is required for GitHub in non-interactive mode")
 	}
 	if err := verifyGitHubPAT(ownerRepo, token); err != nil {
-		return "", "", fmt.Errorf("cannot verify %s with this PAT: %w", ownerRepo, err)
+		return "", "", nil, fmt.Errorf("cannot verify %s with this PAT: %w", ownerRepo, err)
+	}
+	labels, err = githubExpiresAtLabels(expiresAt)
+	if err != nil {
+		return "", "", nil, err
 	}
 	remoteURL, err = embedTokenInHTTPSURL("https://github.com/"+ownerRepo, "x-access-token", token)
 	if err != nil {
-		return "", "", fmt.Errorf("cannot build remote URL: %w", err)
+		return "", "", nil, fmt.Errorf("cannot build remote URL: %w", err)
 	}
-	return remoteURL, token, nil
+	return remoteURL, token, labels, nil
 }
 
 // --- Shared helpers ---------------------------------------------------------

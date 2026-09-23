@@ -141,16 +141,42 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 7.5: Revoke GitLab project access tokens via the API before the
-	// secrets are removed in step 8. The bootstrap PAT is still available here.
-	// Failures are non-fatal warnings — a network issue or missing PAT should
-	// not prevent the rest of uninstall from completing.
+	// Step 7.5: Revoke each project's actual per-repo, per-remote GitLab/
+	// GitHub credentials via API before the secrets are removed in step 8
+	// (Git Remote & Credential Spec §7's multi-remote decision — a project
+	// can have any number of repos, each with any number of remotes, on
+	// either platform). Reuses the same discovery devsys auth/devsys rm use
+	// (gatherRepoStatuses); revocation only, not deletion — step 8 below
+	// already removes every devsys secret on the machine, so this doesn't
+	// also delete them (that would just race step 8 for no benefit). The
+	// bootstrap PAT is still available here. Failures are non-fatal
+	// warnings — a network issue or missing PAT should not prevent the rest
+	// of uninstall from completing.
 	for _, c := range containers {
 		name := containerField(c, "Names")
 		projectName := containerToProject(name)
-		fmt.Printf("Revoking GitLab token for %s ...\n", projectName)
-		if err := revokeGitLabToken(projectName, projectPaths[projectName]); err != nil {
-			fmt.Fprintf(os.Stderr, "  Warning: %v\n", err)
+		projectPath := projectPaths[projectName]
+		if projectPath == "" {
+			continue
+		}
+		statuses, err := gatherRepoStatuses(projectName, projectPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: cannot discover repos for %s: %v\n", projectName, err)
+			continue
+		}
+		for _, st := range statuses {
+			if !st.HasToken {
+				continue
+			}
+			switch st.Platform {
+			case "gitlab":
+				fmt.Printf("Revoking GitLab token for %s (%s) ...\n", projectName, st.SecretName)
+				if err := revokeGitLabRepoToken(st.RemoteURL); err != nil {
+					fmt.Fprintf(os.Stderr, "  Warning: %v\n", err)
+				}
+			case "github":
+				fmt.Printf("  %s (%s): %s\n", projectName, st.SecretName, strings.TrimSpace(githubManualRevokeReminder(st.RemoteURL)))
+			}
 		}
 	}
 

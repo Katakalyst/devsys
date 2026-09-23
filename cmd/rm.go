@@ -3,19 +3,16 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/katakalyst/devsys/internal/gitlab"
 	"github.com/katakalyst/devsys/internal/podman"
 	"github.com/spf13/cobra"
 )
 
 var rmCmd = &cobra.Command{
 	Use:   "rm <project>",
-	Short: "Remove a devsys project (container, secret, volume)",
+	Short: "Remove a devsys project (container, secrets, volumes)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runRm,
 }
@@ -23,13 +20,15 @@ var rmCmd = &cobra.Command{
 func runRm(cmd *cobra.Command, args []string) error {
 	projectName := args[0]
 	containerName := fmt.Sprintf("devsys-%s", projectName)
-	secretName := fmt.Sprintf("devsys-%s-gitlab-token", projectName)
+	legacySecretName := fmt.Sprintf("devsys-%s-gitlab-token", projectName)
 	trivyVolume := fmt.Sprintf("devsys-%s-trivy-db", projectName)
 
 	reader := bufio.NewReader(os.Stdin)
 
-	// Capture the project path now, before the container is removed — it is
-	// needed later for GitLab token revocation (step 4).
+	// Capture the project path now, before the container is removed — step 4
+	// below needs to read the workspace's own repos/remotes from the host
+	// bind mount, which is only discoverable via the running/existing
+	// container's inspect data (getProjectPath), not after it's gone.
 	projectPath, _ := getProjectPath(containerName)
 
 	// Step 1: Stop and remove container.
@@ -54,19 +53,21 @@ func runRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Container %s not found — skipping.\n", containerName)
 	}
 
-	// Step 2: Remove secret.
-	if podman.SecretExists(secretName) {
-		if !confirm(reader, fmt.Sprintf("Remove secret %s?", secretName)) {
-			fmt.Println("Skipping secret removal.")
+	// Step 2: Remove the legacy single project-wide secret, if this project
+	// predates the Git Remote & Credential Spec's per-repo rework and was
+	// never re-authed since (the same legacy case devsys enter's
+	// checkTokenExpiry still checks for). A project created/authed under the
+	// current scheme never has this secret — step 4 below covers it instead.
+	if podman.SecretExists(legacySecretName) {
+		if !confirm(reader, fmt.Sprintf("Remove legacy secret %s?", legacySecretName)) {
+			fmt.Println("Skipping legacy secret removal.")
 		} else {
-			if err := podman.DeleteSecret(secretName); err != nil {
+			if err := podman.DeleteSecret(legacySecretName); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: cannot remove secret: %v\n", err)
 			} else {
-				fmt.Printf("  Secret %s removed.\n", secretName)
+				fmt.Printf("  Secret %s removed.\n", legacySecretName)
 			}
 		}
-	} else {
-		fmt.Printf("Secret %s not found — skipping.\n", secretName)
 	}
 
 	// Step 3: Remove trivy-db volume.
@@ -84,123 +85,62 @@ func runRm(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Volume %s not found — skipping.\n", trivyVolume)
 	}
 
-	// Step 4: Optionally revoke GitLab token.
-	if confirm(reader, fmt.Sprintf("Revoke GitLab access token for project '%s'?", projectName)) {
-		if err := revokeGitLabToken(projectName, projectPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: cannot revoke GitLab token: %v\n", err)
-		} else {
-			fmt.Println("  GitLab token revoked.")
-		}
-	}
+	// Step 4: Discover this project's actual per-repo, per-remote git
+	// credentials (Git Remote & Credential Spec §7's multi-remote decision —
+	// a project can have any number of repos, each with any number of
+	// remotes, GitLab or GitHub) and offer to revoke/remove each one
+	// individually. Reuses the exact same discovery and revoke/remove logic
+	// devsys auth's own listing and [r] Remove menu option use
+	// (gatherRepoStatuses, revokeAndDeleteSecret) rather than a second,
+	// narrower implementation — GitLab tokens are revoked via API, GitHub
+	// fine-grained PATs get a manual-revoke reminder (no revoke API exists
+	// for those), and the Podman secret is deleted either way.
+	revokeProjectRepoCredentials(reader, projectName, projectPath)
 
 	return nil
 }
 
-// revokeGitLabToken revokes the project access token on GitLab.
-// projectPath is the host-side workspace directory; it is captured before the
-// container is removed so it is still available at this step.
-func revokeGitLabToken(projectName, projectPath string) error {
-	bootstrapPAT, err := podman.GetSecretValue("devsys-bootstrap-gitlab-token")
-	if err != nil {
-		return fmt.Errorf("cannot read bootstrap PAT: %w", err)
-	}
-
+func revokeProjectRepoCredentials(reader *bufio.Reader, projectName, projectPath string) {
 	if projectPath == "" {
-		return fmt.Errorf("cannot determine GitLab project ID for '%s' — revoke token manually", projectName)
+		fmt.Println("Cannot determine this project's workspace path — skipping per-repo credential revocation. Revoke any remaining GitLab/GitHub tokens manually.")
+		return
 	}
-	glClient, err := gitlabClientForProject(projectPath, bootstrapPAT)
+	statuses, err := gatherRepoStatuses(projectName, projectPath)
 	if err != nil {
-		return fmt.Errorf("cannot determine GitLab project ID for '%s' — revoke token manually", projectName)
+		fmt.Fprintf(os.Stderr, "Warning: cannot discover this project's repos for credential revocation: %v\n", err)
+		return
 	}
 
-	tokenName := fmt.Sprintf("devsys-%s-gitlab-token", projectName)
-	projectID, err := getProjectIDFromGit(glClient, projectPath)
-	if err != nil || projectID == 0 {
-		return fmt.Errorf("cannot determine GitLab project ID for '%s' — revoke token manually", projectName)
+	remoteCount := make(map[string]int)
+	for _, st := range statuses {
+		remoteCount[st.Repo.RelPath]++
 	}
 
-	tokens, err := glClient.GetProjectTokens(projectID)
-	if err != nil {
-		return err
-	}
-	for _, t := range tokens {
-		if t.Name == tokenName && !t.Revoked {
-			return glClient.RevokeProjectToken(projectID, t.ID)
-		}
-	}
-	return fmt.Errorf("token %s not found on GitLab", tokenName)
-}
-
-// originRemoteURL reads .git/config directly and returns the URL configured
-// for the "origin" remote specifically (not just any remote). devsys init
-// always makes the GitLab remote "origin" (devsys CLI Spec, Section 4), so by
-// the time a project reaches rm or secret rotate, origin is by construction
-// the GitLab remote — there is nothing to search for or compare against a
-// separately configured GitLab hostname (KNOWN_ISSUES.md Issue 11's original
-// fix compared against a configured host; this removes the need for any
-// configured host at all).
-func originRemoteURL(projectPath string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(projectPath, ".git", "config"))
-	if err != nil {
-		return "", err
-	}
-	inOrigin := false
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[") {
-			inOrigin = line == `[remote "origin"]`
+	found := false
+	for i := range statuses {
+		st := &statuses[i]
+		if !st.HasToken {
 			continue
 		}
-		if inOrigin && strings.HasPrefix(line, "url = ") {
-			return strings.TrimPrefix(line, "url = "), nil
+		found = true
+
+		label := st.Repo.RelPath
+		if remoteCount[st.Repo.RelPath] > 1 {
+			label = fmt.Sprintf("%s (%s)", label, st.RemoteName)
+		}
+		if !confirm(reader, fmt.Sprintf("Revoke %s credential for %s (%s)?", st.Platform, label, st.SecretName)) {
+			fmt.Printf("Skipping %s.\n", st.SecretName)
+			continue
+		}
+		if err := revokeAndDeleteSecret(st); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot revoke/remove %s: %v\n", st.SecretName, err)
+		} else {
+			fmt.Printf("  %s revoked and removed.\n", st.SecretName)
 		}
 	}
-	return "", fmt.Errorf("no origin remote found in %s", projectPath)
-}
-
-// apiBaseURLFromRemote derives a GitLab REST API base URL (scheme + host)
-// from a remote URL, whether SSH (git@host:ns/proj.git) or HTTPS
-// (https://host/ns/proj). The API is always reached over HTTPS regardless of
-// which protocol the git remote itself uses.
-func apiBaseURLFromRemote(remoteURL string) (string, error) {
-	if strings.HasPrefix(remoteURL, "git@") {
-		parts := strings.SplitN(remoteURL, ":", 2)
-		host := strings.TrimPrefix(parts[0], "git@")
-		if host == "" {
-			return "", fmt.Errorf("cannot parse host from remote URL %q", remoteURL)
-		}
-		return "https://" + host, nil
+	if !found {
+		fmt.Println("No per-repo git credentials found for this project.")
 	}
-	parsed, err := url.Parse(remoteURL)
-	if err != nil || parsed.Host == "" {
-		return "", fmt.Errorf("cannot parse host from remote URL %q", remoteURL)
-	}
-	return "https://" + parsed.Host, nil
-}
-
-// gitlabClientForProject builds a GitLab client scoped to whatever GitLab
-// instance a project's own "origin" remote actually points at, rather than
-// any separately configured or passed-in GitLab host.
-func gitlabClientForProject(projectPath, bootstrapPAT string) (*gitlab.Client, error) {
-	originURL, err := originRemoteURL(projectPath)
-	if err != nil {
-		return nil, err
-	}
-	apiBaseURL, err := apiBaseURLFromRemote(originURL)
-	if err != nil {
-		return nil, err
-	}
-	return gitlab.NewClient(apiBaseURL, bootstrapPAT), nil
-}
-
-// getProjectIDFromGit reads the project's origin remote and looks up its
-// GitLab project ID.
-func getProjectIDFromGit(glClient *gitlab.Client, projectPath string) (int, error) {
-	originURL, err := originRemoteURL(projectPath)
-	if err != nil {
-		return 0, err
-	}
-	return glClient.GetProject(originURL)
 }
 
 // confirm prints a prompt and returns true only if the user types "y" or "Y".

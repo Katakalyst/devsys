@@ -36,7 +36,9 @@ var authCmd = &cobra.Command{
   (the common case) never needs it, same optionality rule as [repo] one level up.
 
   --token is required for any GitHub operation above (create/attach/rotate/ensure) — GitHub fine-grained
-  PATs can't be created via API, so scriptable mode can't prompt for one the way the interactive form does.`,
+  PATs can't be created via API, so scriptable mode can't prompt for one the way the interactive form does.
+  --expires-at (optional) records the expiration you set for that PAT on github.com, since GitHub never
+  exposes it back to devsys — without it, devsys enter's 30-day expiry warning has nothing to warn from.`,
 	// RunE handles the "devsys auth <project>" form — anything whose first
 	// argument isn't one of the bootstrap subcommand names above (Git Remote
 	// & Credential Spec §9).
@@ -97,6 +99,7 @@ func init() {
 	authCmd.Flags().BoolVar(&authScriptRemove, "remove", false, "Revoke and unmount the token for the given/only repo, remote left as-is (scriptable)")
 	authCmd.Flags().StringVar(&authScriptName, "name", "", "Platform project/repo name for --create (default: derived from the project/repo path)")
 	authCmd.Flags().StringVar(&authScriptToken, "token", "", "GitHub fine-grained PAT — required for any GitHub operation in scriptable mode, never prompted")
+	authCmd.Flags().StringVar(&authScriptExpiresAt, "expires-at", "", "Expiration (YYYY-MM-DD) the --token PAT was given on github.com, self-reported since GitHub's API never exposes it — optional, blank means \"No expiration\"/unknown; GitLab ignores this, its expiry is always known from minting")
 	authCmd.Flags().BoolVar(&authScriptForce, "force", false, "Allow --create/--attach to replace an already-configured repo's credential")
 
 	authCmd.AddCommand(authClaudeCmd)
