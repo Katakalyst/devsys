@@ -29,7 +29,7 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 	// images, volumes, and secrets.
 	if _, err := podman.RunPodman("info", "--format", "{{.Host.OS}}"); err != nil {
 		return fmt.Errorf(
-			"Podman is not accessible — make sure Podman is running and try again\n" +
+			"podman is not accessible — make sure Podman is running and try again\n" +
 				"  (on Windows: ensure the WSL2 Podman machine is started)")
 	}
 
