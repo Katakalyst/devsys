@@ -25,6 +25,19 @@ import (
 // --gitlab-url flag (self-hosted instances supported).
 var authGitLabURL string
 
+// Scriptable-form flags (Phase 5, Git Remote & Credential Spec §9). Declared
+// here alongside the code that reads them; registered on authCmd in
+// cmd/auth.go's init(), same split already used for authGitLabURL above.
+var (
+	authScriptCreate bool
+	authScriptAttach string
+	authScriptRotate bool
+	authScriptRemove bool
+	authScriptName   string
+	authScriptToken  string
+	authScriptForce  bool
+)
+
 // tokenExpiryWarnDays is the same 30-day threshold devsys enter's
 // checkTokenExpiry already uses — one shared threshold for the whole CLI,
 // not a second number to keep in sync (Git Remote & Credential Spec §9).
@@ -46,18 +59,22 @@ type repoAuthStatus struct {
 // runAuthProject is authCmd's own RunE, invoked whenever the first argument
 // to `devsys auth` doesn't match one of the claude/codex/gitlab/github
 // bootstrap subcommands — i.e. it's a project name (Git Remote & Credential
-// Spec §9's command list). Only the bare interactive-listing form is
-// implemented here; the scriptable --create/--attach/--rotate/--remove
-// flags are a separate phase (documents/Git Remote & Credential
-// Implementation Plan.md, Phase 5), built on this same per-repo logic.
+// Spec §9's command list). Dispatches to the interactive listing (bare
+// `devsys auth <project>`, no extra args, no operation flags) or the
+// scriptable single-repo form (any extra positional arg, or any of
+// --create/--attach/--rotate/--remove — Phase 5).
 func runAuthProject(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: devsys auth <project> | devsys auth gitlab|github|claude|codex")
 	}
-	if len(args) > 1 {
-		return fmt.Errorf("devsys auth <project>: scriptable single-repo flags are not implemented yet — run without extra arguments for the interactive listing")
+	projectName := args[0]
+	extra := args[1:]
+
+	operationFlagSet := authScriptCreate || authScriptAttach != "" || authScriptRotate || authScriptRemove
+	if len(extra) == 0 && !operationFlagSet {
+		return runAuthProjectInteractive(projectName)
 	}
-	return runAuthProjectInteractive(args[0])
+	return runAuthProjectScriptable(projectName, extra)
 }
 
 func runAuthProjectInteractive(projectName string) error {
@@ -113,6 +130,332 @@ func runAuthProjectInteractive(projectName string) error {
 		return nil
 	}
 	return recreateContainerForAuth(projectName)
+}
+
+// --- Scriptable form (Phase 5) ----------------------------------------------
+
+// runAuthProjectScriptable is the non-interactive counterpart to
+// runAuthProjectInteractive: `devsys auth <project> [repo] [platform]
+// --create/--attach/--rotate/--remove [--name] [--token] [--force]`
+// (Git Remote & Credential Spec §9). Never prompts — every input it needs
+// comes from a flag, and any missing requirement is a hard error.
+func runAuthProjectScriptable(projectName string, extra []string) error {
+	repoArg, platformArg, err := parseRepoAndPlatformArgs(extra)
+	if err != nil {
+		return err
+	}
+
+	// Validate flag combinations before touching Podman or the workspace at
+	// all — a malformed invocation should fail on the actual mistake, not
+	// on an unrelated "container doesn't exist" that happens to run first.
+	ops := 0
+	if authScriptCreate {
+		ops++
+	}
+	if authScriptAttach != "" {
+		ops++
+	}
+	if authScriptRotate {
+		ops++
+	}
+	if authScriptRemove {
+		ops++
+	}
+	if ops > 1 {
+		return fmt.Errorf("only one of --create/--attach/--rotate/--remove may be given at a time")
+	}
+
+	containerName := fmt.Sprintf("devsys-%s", projectName)
+	if !podman.ContainerExists(containerName) {
+		return fmt.Errorf("container %s does not exist — run 'devsys init' first", containerName)
+	}
+	workspaceRoot, err := getProjectPath(containerName)
+	if err != nil {
+		return fmt.Errorf("cannot determine project path for %s: %w", projectName, err)
+	}
+
+	statuses, err := gatherRepoStatuses(projectName, workspaceRoot)
+	if err != nil {
+		return err
+	}
+	if len(statuses) == 0 {
+		return fmt.Errorf("no repos found in %s's workspace", projectName)
+	}
+
+	st, err := selectRepoForScriptable(statuses, repoArg)
+	if err != nil {
+		return err
+	}
+
+	changed, err := runScriptableOperation(projectName, st, platformArg)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	return recreateContainerForAuth(projectName)
+}
+
+// parseRepoAndPlatformArgs classifies devsys auth <project>'s remaining
+// positional args into repo and platform: an arg equal to "gitlab" or
+// "github" is the platform, anything else is the repo (Spec §9's
+// "<project> [repo] [platform]" — order-independent here so repo can be
+// omitted without an awkward placeholder when only platform is needed). A
+// repo whose own RelPath happens to literally be "gitlab"/"github" can't be
+// addressed this way — an accepted, narrow edge case, same category as the
+// project-name-vs-bootstrap-subcommand-name ambiguity already accepted
+// elsewhere on this command.
+func parseRepoAndPlatformArgs(extra []string) (repo, platform string, err error) {
+	if len(extra) > 2 {
+		return "", "", fmt.Errorf("too many arguments — expected [repo] [platform]")
+	}
+	for _, a := range extra {
+		lower := strings.ToLower(a)
+		if lower == "gitlab" || lower == "github" {
+			if platform != "" {
+				return "", "", fmt.Errorf("platform given twice")
+			}
+			platform = lower
+			continue
+		}
+		if repo != "" {
+			return "", "", fmt.Errorf("unexpected extra argument %q", a)
+		}
+		repo = a
+	}
+	return repo, platform, nil
+}
+
+// selectRepoForScriptable resolves which discovered repo a scriptable
+// invocation applies to: the explicitly named one, or the project's only
+// one if none was given. Spec §9's stated error case: "[repo] omitted with
+// 2+ repos present -> error listing the actual discovered paths, not a guess."
+func selectRepoForScriptable(statuses []repoAuthStatus, repoArg string) (*repoAuthStatus, error) {
+	if repoArg != "" {
+		for i := range statuses {
+			if statuses[i].Repo.RelPath == repoArg {
+				return &statuses[i], nil
+			}
+		}
+		return nil, fmt.Errorf("no repo at %q — discovered repos: %s", repoArg, joinRepoPaths(statuses))
+	}
+	if len(statuses) != 1 {
+		return nil, fmt.Errorf("project has more than one repo — specify which one: %s", joinRepoPaths(statuses))
+	}
+	return &statuses[0], nil
+}
+
+func joinRepoPaths(statuses []repoAuthStatus) string {
+	paths := make([]string, len(statuses))
+	for i, st := range statuses {
+		paths[i] = st.Repo.RelPath
+	}
+	return strings.Join(paths, ", ")
+}
+
+// runScriptableOperation dispatches on which operation flag was given —
+// exactly mirroring configureRepo's dispatch, but flag-driven instead of
+// menu-driven, and reports whether anything changed the same way.
+func runScriptableOperation(projectName string, st *repoAuthStatus, platformArg string) (bool, error) {
+	switch {
+	case authScriptCreate:
+		return scriptableCreateOrAttach(projectName, st, "create", authScriptName, platformArg)
+	case authScriptAttach != "":
+		return scriptableCreateOrAttach(projectName, st, "attach", authScriptAttach, platformArg)
+	case authScriptRotate:
+		return scriptableRotate(st)
+	case authScriptRemove:
+		return scriptableRemove(st)
+	default:
+		return scriptableEnsure(projectName, st)
+	}
+}
+
+// scriptableCreateOrAttach is --create/--attach's scriptable form —
+// the flag-driven counterpart to configureNoRemote/changeRepoTarget.
+// Refuses an already-configured repo unless --force is given, matching the
+// interactive [c] Change menu's underlying operation (Spec §9: "--force is
+// how the scriptable form does what the interactive menu's [c] Change does").
+func scriptableCreateOrAttach(projectName string, st *repoAuthStatus, mode, nameOrTarget, platformArg string) (bool, error) {
+	if st.HasRemote {
+		if !authScriptForce {
+			return false, fmt.Errorf("%q is already configured — use --force to replace, --remove to clear, or --rotate to refresh", st.Repo.RelPath)
+		}
+		if err := revokeAndDeleteSecret(st); err != nil {
+			return false, err
+		}
+		if err := clearOriginRemote(st.Repo.AbsPath); err != nil {
+			return false, err
+		}
+		st.HasRemote, st.HasToken = false, false
+		st.RemoteURL, st.Platform, st.SecretName, st.ExpiresAt = "", "", "", ""
+	}
+
+	if platformArg == "" {
+		return false, fmt.Errorf("platform is required for --create/--attach on a repo with no remote — pass gitlab or github")
+	}
+
+	var remoteURL, tokenValue string
+	var labels map[string]string
+	var err error
+	switch platformArg {
+	case "gitlab":
+		remoteURL, tokenValue, labels, err = setupGitLabRemoteScriptable(projectName, st, mode, nameOrTarget)
+	case "github":
+		remoteURL, tokenValue, err = setupGitHubRemoteScriptable(projectName, st, mode, nameOrTarget, authScriptToken)
+	default:
+		return false, fmt.Errorf("unknown platform %q — must be gitlab or github", platformArg)
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if err := writeOriginRemote(st.Repo.AbsPath, remoteURL); err != nil {
+		return false, fmt.Errorf("cannot write remote: %w", err)
+	}
+	repoID, err := workspace.RepoIDFromURL(remoteURL)
+	if err != nil {
+		return false, fmt.Errorf("cannot determine repo id: %w", err)
+	}
+	secretName := workspace.SecretName(projectName, repoID, platformArg)
+	if err := storeRepoSecret(secretName, tokenValue, labels); err != nil {
+		return false, err
+	}
+
+	st.HasRemote, st.RemoteURL, st.Platform, st.SecretName, st.HasToken = true, remoteURL, platformArg, secretName, true
+	st.ExpiresAt = labels["devsys.expires-at"]
+	fmt.Printf("%s: remote wired, token stored (%s)\n", st.Repo.RelPath, secretName)
+	return true, nil
+}
+
+// scriptableRotate is --rotate's scriptable form — rotateRepoToken's logic
+// without the confirmation prompt (scriptable never prompts) and reading
+// the GitHub PAT from --token instead of stdin.
+func scriptableRotate(st *repoAuthStatus) (bool, error) {
+	if !st.HasToken {
+		return false, fmt.Errorf("%q has no token to rotate — use --create or --attach first", st.Repo.RelPath)
+	}
+
+	var tokenValue, userInfo string
+	var labels map[string]string
+
+	switch st.Platform {
+	case "gitlab":
+		if err := revokeGitLabRepoToken(st.RemoteURL); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not revoke old GitLab token via API: %v\n", err)
+		}
+		var err error
+		tokenValue, labels, err = mintGitLabTokenForRemote(st.RemoteURL)
+		if err != nil {
+			return false, err
+		}
+		userInfo = "oauth2"
+	case "github":
+		if authScriptToken == "" {
+			return false, fmt.Errorf("--token is required to rotate a GitHub PAT in non-interactive mode")
+		}
+		repoPath, err := workspace.PathFromURL(st.RemoteURL)
+		if err != nil {
+			return false, fmt.Errorf("cannot determine owner/repo: %w", err)
+		}
+		if err := verifyGitHubPAT(repoPath, authScriptToken); err != nil {
+			return false, fmt.Errorf("cannot verify %s with this PAT: %w", repoPath, err)
+		}
+		tokenValue = authScriptToken
+		userInfo = "x-access-token"
+	}
+
+	if err := storeRepoSecret(st.SecretName, tokenValue, labels); err != nil {
+		return false, err
+	}
+	st.ExpiresAt = labels["devsys.expires-at"]
+	st.HasToken = true
+
+	if remoteHasEmbeddedCredentials(st.RemoteURL) {
+		newRemoteURL, err := embedTokenInHTTPSURL(st.RemoteURL, userInfo, tokenValue)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not rewrite remote URL with the new token: %v\n", err)
+		} else if err := writeOriginRemote(st.Repo.AbsPath, newRemoteURL); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not update the remote with the new token: %v\n", err)
+		} else {
+			st.RemoteURL = newRemoteURL
+		}
+	}
+	fmt.Printf("%s: new token stored\n", st.Repo.RelPath)
+	return true, nil
+}
+
+// scriptableRemove is --remove's scriptable form (R12.5): revoke and
+// unmount, remote left as-is. A repo with no token is a no-op, not an
+// error — nothing to remove.
+func scriptableRemove(st *repoAuthStatus) (bool, error) {
+	if !st.HasToken {
+		fmt.Printf("%s: no token to remove\n", st.Repo.RelPath)
+		return false, nil
+	}
+	if err := revokeAndDeleteSecret(st); err != nil {
+		return false, err
+	}
+	st.HasToken, st.SecretName, st.ExpiresAt = false, "", ""
+	fmt.Printf("%s: token removed, remote left as-is\n", st.Repo.RelPath)
+	return true, nil
+}
+
+// scriptableEnsure is the bare scriptable form's operation (no --create/
+// --attach/--rotate/--remove given): R11 "ensure/refresh" — confirm a
+// credential is present and working, safe to call whether or not one
+// already exists, never implying a discard of one that's still fine. Spec
+// §9: "devsys auth <project> [repo] # bare — only valid if repo already has
+// a remote."
+func scriptableEnsure(projectName string, st *repoAuthStatus) (bool, error) {
+	switch {
+	case !st.HasRemote:
+		return false, fmt.Errorf("%q has no remote — use --create or --attach", st.Repo.RelPath)
+	case !st.HasToken:
+		return scriptableEnsureToken(projectName, st)
+	default:
+		fmt.Printf("%s: already configured — %s, %s\n", st.Repo.RelPath, st.Platform, tokenExpiryText(st.ExpiresAt))
+		return false, nil
+	}
+}
+
+func scriptableEnsureToken(projectName string, st *repoAuthStatus) (bool, error) {
+	repoID, err := workspace.RepoIDFromURL(st.RemoteURL)
+	if err != nil {
+		return false, fmt.Errorf("cannot determine repo id: %w", err)
+	}
+	secretName := workspace.SecretName(projectName, repoID, st.Platform)
+
+	var tokenValue string
+	var labels map[string]string
+	switch st.Platform {
+	case "gitlab":
+		tokenValue, labels, err = mintGitLabTokenForRemote(st.RemoteURL)
+	case "github":
+		if authScriptToken == "" {
+			return false, fmt.Errorf("--token is required for GitHub in non-interactive mode")
+		}
+		repoPath, pathErr := workspace.PathFromURL(st.RemoteURL)
+		if pathErr != nil {
+			return false, fmt.Errorf("cannot determine owner/repo: %w", pathErr)
+		}
+		if verifyErr := verifyGitHubPAT(repoPath, authScriptToken); verifyErr != nil {
+			return false, fmt.Errorf("cannot verify %s with this PAT: %w", repoPath, verifyErr)
+		}
+		tokenValue = authScriptToken
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if err := storeRepoSecret(secretName, tokenValue, labels); err != nil {
+		return false, err
+	}
+	st.SecretName, st.HasToken = secretName, true
+	st.ExpiresAt = labels["devsys.expires-at"]
+	fmt.Printf("%s: token stored (%s)\n", st.Repo.RelPath, secretName)
+	return true, nil
 }
 
 // gatherRepoStatuses runs the recursive discovery walk and derives each
@@ -549,29 +892,72 @@ func promptAndVerifyGitHubPAT(reader *bufio.Reader, ownerRepo string) (string, e
 	if pat == "" {
 		return "", fmt.Errorf("PAT cannot be empty")
 	}
-
-	owner, repo, ok := strings.Cut(ownerRepo, "/")
-	if !ok {
-		return "", fmt.Errorf("expected owner/repo, got %q", ownerRepo)
-	}
-	client := github.NewClient(pat)
-	if err := client.GetRepo(owner, repo); err != nil {
+	if err := verifyGitHubPAT(ownerRepo, pat); err != nil {
 		return "", fmt.Errorf("cannot verify %s with this PAT: %w", ownerRepo, err)
 	}
 	return pat, nil
 }
 
+// verifyGitHubPAT checks a fine-grained PAT against a specific owner/repo —
+// the shared core of promptAndVerifyGitHubPAT (interactive) and the
+// scriptable GitHub paths, which get the PAT from --token instead of a
+// prompt but still need the same verification (Spec §9's error cases).
+func verifyGitHubPAT(ownerRepo, token string) error {
+	owner, repo, ok := strings.Cut(ownerRepo, "/")
+	if !ok {
+		return fmt.Errorf("expected owner/repo, got %q", ownerRepo)
+	}
+	return github.NewClient(token).GetRepo(owner, repo)
+}
+
 // --- GitLab-specific setup --------------------------------------------------
 
-func setupGitLabRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus, mode string) (remoteURL, tokenValue string, labels map[string]string, err error) {
+// gitLabClient builds a GitLab client from the bootstrap PAT. Shared by
+// every GitLab code path so failure behaves identically everywhere:
+// returning an error here, rather than prompting, is what makes the
+// scriptable form's "bootstrap PAT missing -> fails immediately, never
+// prompts" rule (Spec §9) automatic rather than something each caller has
+// to remember to implement.
+func gitLabClient() (*gitlab.Client, error) {
 	bootstrapPAT, err := podman.GetSecretValue("devsys-bootstrap-gitlab-token")
 	if err != nil {
-		return "", "", nil, fmt.Errorf("cannot read bootstrap GitLab PAT (run 'devsys auth gitlab' first): %w", err)
+		return nil, fmt.Errorf("cannot read bootstrap GitLab PAT (run 'devsys auth gitlab' first): %w", err)
 	}
-	glClient := gitlab.NewClient(authGitLabURL, bootstrapPAT)
+	return gitlab.NewClient(authGitLabURL, bootstrapPAT), nil
+}
 
-	var webURL string
-	var projectID int
+// resolveGitLabProject creates ("create" mode, nameOrTarget is the new
+// project's name) or looks up ("attach" mode, nameOrTarget is an
+// owner/repo or full URL) a GitLab project. Shared by the interactive and
+// scriptable forms — the only difference between them is how nameOrTarget
+// gets collected (prompted vs. --name/--attach flags).
+func resolveGitLabProject(glClient *gitlab.Client, mode, nameOrTarget string) (projectID int, webURL string, err error) {
+	if mode == "create" {
+		projectID, webURL, err = glClient.CreateProject(nameOrTarget)
+		if err != nil {
+			return 0, "", fmt.Errorf("cannot create GitLab project: %w", err)
+		}
+		return projectID, webURL, nil
+	}
+	projectID, err = glClient.GetProject(nameOrTarget)
+	if err != nil {
+		return 0, "", fmt.Errorf("cannot find GitLab project %s: %w", nameOrTarget, err)
+	}
+	if strings.HasPrefix(nameOrTarget, "http://") || strings.HasPrefix(nameOrTarget, "https://") {
+		webURL = nameOrTarget
+	} else {
+		webURL = strings.TrimRight(authGitLabURL, "/") + "/" + nameOrTarget
+	}
+	return projectID, webURL, nil
+}
+
+func setupGitLabRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus, mode string) (remoteURL, tokenValue string, labels map[string]string, err error) {
+	glClient, err := gitLabClient()
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	var nameOrTarget string
 	if mode == "create" {
 		defaultName := repoDefaultName(projectName, st.Repo.RelPath)
 		fmt.Printf("  Project name [%s]: ", defaultName)
@@ -580,11 +966,7 @@ func setupGitLabRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 		if name == "" {
 			name = defaultName
 		}
-		projectID, webURL, err = glClient.CreateProject(name)
-		if err != nil {
-			return "", "", nil, fmt.Errorf("cannot create GitLab project: %w", err)
-		}
-		fmt.Printf("  -> created %s\n", webURL)
+		nameOrTarget = name
 	} else {
 		fmt.Print("  GitLab project (owner/repo or URL): ")
 		line, _ := reader.ReadString('\n')
@@ -592,17 +974,47 @@ func setupGitLabRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 		if target == "" {
 			return "", "", nil, fmt.Errorf("GitLab project target cannot be empty")
 		}
-		projectID, err = glClient.GetProject(target)
-		if err != nil {
-			return "", "", nil, fmt.Errorf("cannot find GitLab project %s: %w", target, err)
-		}
-		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-			webURL = target
-		} else {
-			webURL = strings.TrimRight(authGitLabURL, "/") + "/" + target
-		}
+		nameOrTarget = target
 	}
 
+	projectID, webURL, err := resolveGitLabProject(glClient, mode, nameOrTarget)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if mode == "create" {
+		fmt.Printf("  -> created %s\n", webURL)
+	}
+
+	tokenValue, labels, err = mintGitLabToken(glClient, projectID, webURL)
+	if err != nil {
+		return "", "", nil, err
+	}
+	remoteURL, err = embedTokenInHTTPSURL(webURL, "oauth2", tokenValue)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("cannot build remote URL: %w", err)
+	}
+	return remoteURL, tokenValue, labels, nil
+}
+
+// setupGitLabRemoteScriptable is setupGitLabRemote's non-interactive
+// counterpart: nameOrTarget comes from --name/--attach, never prompted
+// (Git Remote & Credential Spec §9: the scriptable form never prompts).
+func setupGitLabRemoteScriptable(projectName string, st *repoAuthStatus, mode, nameOrTarget string) (remoteURL, tokenValue string, labels map[string]string, err error) {
+	glClient, err := gitLabClient()
+	if err != nil {
+		return "", "", nil, err
+	}
+	if mode == "create" && nameOrTarget == "" {
+		nameOrTarget = repoDefaultName(projectName, st.Repo.RelPath)
+	}
+	if mode == "attach" && nameOrTarget == "" {
+		return "", "", nil, fmt.Errorf("--attach requires a target (owner/repo or URL)")
+	}
+
+	projectID, webURL, err := resolveGitLabProject(glClient, mode, nameOrTarget)
+	if err != nil {
+		return "", "", nil, err
+	}
 	tokenValue, labels, err = mintGitLabToken(glClient, projectID, webURL)
 	if err != nil {
 		return "", "", nil, err
@@ -619,11 +1031,10 @@ func setupGitLabRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 // the project ID first. Used by the remote-already-exists and rotate
 // branches, which only have a URL, not an ID already in hand.
 func mintGitLabTokenForRemote(remoteURL string) (tokenValue string, labels map[string]string, err error) {
-	bootstrapPAT, err := podman.GetSecretValue("devsys-bootstrap-gitlab-token")
+	glClient, err := gitLabClient()
 	if err != nil {
-		return "", nil, fmt.Errorf("cannot read bootstrap GitLab PAT (run 'devsys auth gitlab' first): %w", err)
+		return "", nil, err
 	}
-	glClient := gitlab.NewClient(authGitLabURL, bootstrapPAT)
 	projectID, err := glClient.GetProject(remoteURL)
 	if err != nil {
 		return "", nil, fmt.Errorf("cannot find GitLab project for %s: %w", remoteURL, err)
@@ -655,11 +1066,10 @@ func mintGitLabToken(glClient *gitlab.Client, projectID int, repoURL string) (to
 // nothing to revoke (e.g. an agent-set remote whose token was minted before
 // this naming convention, or already revoked).
 func revokeGitLabRepoToken(remoteURL string) error {
-	bootstrapPAT, err := podman.GetSecretValue("devsys-bootstrap-gitlab-token")
+	glClient, err := gitLabClient()
 	if err != nil {
 		return err
 	}
-	glClient := gitlab.NewClient(authGitLabURL, bootstrapPAT)
 	projectID, err := glClient.GetProject(remoteURL)
 	if err != nil {
 		return err
@@ -684,14 +1094,24 @@ func revokeGitLabRepoToken(remoteURL string) error {
 
 // --- GitHub-specific setup --------------------------------------------------
 
+// githubBootstrapClient builds a GitHub client from the bootstrap PAT —
+// used only for --create's repo-creation step (Spec §7: "For --attach, no
+// bootstrap PAT is needed").
+func githubBootstrapClient() (*github.Client, error) {
+	bootstrapPAT, err := podman.GetSecretValue("devsys-bootstrap-github-token")
+	if err != nil {
+		return nil, fmt.Errorf("cannot read bootstrap GitHub PAT (run 'devsys auth github' first): %w", err)
+	}
+	return github.NewClient(bootstrapPAT), nil
+}
+
 func setupGitHubRemote(reader *bufio.Reader, projectName string, st *repoAuthStatus, mode string) (remoteURL, tokenValue string, err error) {
 	var ownerRepo string
 	if mode == "create" {
-		bootstrapPAT, err := podman.GetSecretValue("devsys-bootstrap-github-token")
+		bootstrapClient, err := githubBootstrapClient()
 		if err != nil {
-			return "", "", fmt.Errorf("cannot read bootstrap GitHub PAT (run 'devsys auth github' first): %w", err)
+			return "", "", err
 		}
-		bootstrapClient := github.NewClient(bootstrapPAT)
 
 		defaultName := repoDefaultName(projectName, st.Repo.RelPath)
 		fmt.Printf("  Repo name [%s]: ", defaultName)
@@ -725,6 +1145,45 @@ func setupGitHubRemote(reader *bufio.Reader, projectName string, st *repoAuthSta
 	}
 	fmt.Println("  -> attached, remote wired")
 	return remoteURL, tokenValue, nil
+}
+
+// setupGitHubRemoteScriptable is setupGitHubRemote's non-interactive
+// counterpart: nameOrTarget comes from --name/--attach and the PAT from
+// --token, never prompted (Spec §9: the scriptable form never prompts).
+func setupGitHubRemoteScriptable(projectName string, st *repoAuthStatus, mode, nameOrTarget, token string) (remoteURL, tokenValue string, err error) {
+	var ownerRepo string
+	if mode == "create" {
+		bootstrapClient, err := githubBootstrapClient()
+		if err != nil {
+			return "", "", err
+		}
+		name := nameOrTarget
+		if name == "" {
+			name = repoDefaultName(projectName, st.Repo.RelPath)
+		}
+		_, fullName, err := bootstrapClient.CreateRepo(name)
+		if err != nil {
+			return "", "", fmt.Errorf("cannot create GitHub repo: %w", err)
+		}
+		ownerRepo = fullName
+	} else {
+		ownerRepo = nameOrTarget
+		if ownerRepo == "" {
+			return "", "", fmt.Errorf("--attach requires a target (owner/repo)")
+		}
+	}
+
+	if token == "" {
+		return "", "", fmt.Errorf("--token is required for GitHub in non-interactive mode")
+	}
+	if err := verifyGitHubPAT(ownerRepo, token); err != nil {
+		return "", "", fmt.Errorf("cannot verify %s with this PAT: %w", ownerRepo, err)
+	}
+	remoteURL, err = embedTokenInHTTPSURL("https://github.com/"+ownerRepo, "x-access-token", token)
+	if err != nil {
+		return "", "", fmt.Errorf("cannot build remote URL: %w", err)
+	}
+	return remoteURL, token, nil
 }
 
 // --- Shared helpers ---------------------------------------------------------

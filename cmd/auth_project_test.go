@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/katakalyst/devsys/internal/workspace"
 )
 
 func futureDate(days int) string {
@@ -135,6 +138,92 @@ func TestRemoteHasEmbeddedCredentials(t *testing.T) {
 		if got := remoteHasEmbeddedCredentials(tc.url); got != tc.want {
 			t.Errorf("remoteHasEmbeddedCredentials(%q) = %v, want %v", tc.url, got, tc.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseRepoAndPlatformArgs — Phase 5's scriptable "<project> [repo]
+// [platform]" arg classification (Git Remote & Credential Spec §9).
+// ---------------------------------------------------------------------------
+
+func TestParseRepoAndPlatformArgs(t *testing.T) {
+	cases := []struct {
+		extra      []string
+		repo, plat string
+		wantErr    bool
+	}{
+		{nil, "", "", false},
+		{[]string{"frontend"}, "frontend", "", false},
+		{[]string{"gitlab"}, "", "gitlab", false},
+		{[]string{"GitHub"}, "", "github", false}, // case-insensitive
+		{[]string{"frontend", "gitlab"}, "frontend", "gitlab", false},
+		{[]string{"gitlab", "frontend"}, "frontend", "gitlab", false}, // order-independent
+		{[]string{"frontend", "backend"}, "", "", true},               // two non-platform args
+		{[]string{"gitlab", "github"}, "", "", true},                  // platform given twice
+		{[]string{"a", "b", "c"}, "", "", true},                       // too many
+	}
+	for _, tc := range cases {
+		repo, plat, err := parseRepoAndPlatformArgs(tc.extra)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseRepoAndPlatformArgs(%v): expected error, got repo=%q platform=%q", tc.extra, repo, plat)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseRepoAndPlatformArgs(%v): unexpected error: %v", tc.extra, err)
+			continue
+		}
+		if repo != tc.repo || plat != tc.plat {
+			t.Errorf("parseRepoAndPlatformArgs(%v) = (%q, %q), want (%q, %q)", tc.extra, repo, plat, tc.repo, tc.plat)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// selectRepoForScriptable — Spec §9's stated error case: "[repo] omitted
+// with 2+ repos present -> error listing the actual discovered paths, not
+// a guess."
+// ---------------------------------------------------------------------------
+
+func TestSelectRepoForScriptable(t *testing.T) {
+	one := []repoAuthStatus{{Repo: workspace.Repo{RelPath: "."}}}
+	two := []repoAuthStatus{
+		{Repo: workspace.Repo{RelPath: "."}},
+		{Repo: workspace.Repo{RelPath: "frontend"}},
+	}
+
+	// Single repo, no repo arg -> resolves to the only one.
+	got, err := selectRepoForScriptable(one, "")
+	if err != nil {
+		t.Fatalf("single repo, no arg: unexpected error: %v", err)
+	}
+	if got.Repo.RelPath != "." {
+		t.Errorf("single repo, no arg: got %q, want %q", got.Repo.RelPath, ".")
+	}
+
+	// Multiple repos, no repo arg -> error naming the actual paths.
+	_, err = selectRepoForScriptable(two, "")
+	if err == nil {
+		t.Fatal("multiple repos, no arg: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "frontend") {
+		t.Errorf("multiple repos, no arg: error should list discovered paths, got %q", err.Error())
+	}
+
+	// Multiple repos, explicit repo arg -> resolves correctly.
+	got, err = selectRepoForScriptable(two, "frontend")
+	if err != nil {
+		t.Fatalf("explicit repo arg: unexpected error: %v", err)
+	}
+	if got.Repo.RelPath != "frontend" {
+		t.Errorf("explicit repo arg: got %q, want %q", got.Repo.RelPath, "frontend")
+	}
+
+	// Repo arg that doesn't exist -> error.
+	_, err = selectRepoForScriptable(two, "doesnotexist")
+	if err == nil {
+		t.Fatal("nonexistent repo arg: expected error, got nil")
 	}
 }
 

@@ -25,7 +25,15 @@ var authCmd = &cobra.Command{
 	Long: `Manage shared Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials.
 
   devsys auth claude|codex|gitlab|github [--force]   bootstrap subcommands, above
-  devsys auth <project>                              interactive per-repo credential listing for a project`,
+  devsys auth <project>                              interactive per-repo credential listing for a project
+  devsys auth <project> [repo] [platform] --create [--name <name>] [--force]
+  devsys auth <project> [repo] [platform] --attach <owner/repo-or-url> [--force]
+  devsys auth <project> [repo] --rotate              scriptable rotate
+  devsys auth <project> [repo] --remove              scriptable remove
+  devsys auth <project> [repo]                       scriptable ensure — only valid if repo already has a remote
+
+  --token is required for any GitHub operation above (create/attach/rotate/ensure) — GitHub fine-grained
+  PATs can't be created via API, so scriptable mode can't prompt for one the way the interactive form does.`,
 	// RunE handles the "devsys auth <project>" form — anything whose first
 	// argument isn't one of the bootstrap subcommand names above (Git Remote
 	// & Credential Spec §9).
@@ -80,6 +88,13 @@ func init() {
 	authGitHubCmd.Flags().BoolVar(&authGitHubForce, "force", false, "Replace the existing bootstrap PAT secret")
 	authCmd.Flags().StringVar(&authGitLabURL, "gitlab-url", "https://gitlab.com",
 		"GitLab base URL to create/attach repos against (self-hosted instances supported)")
+	authCmd.Flags().BoolVar(&authScriptCreate, "create", false, "Create a new platform repo for the given/only repo and wire it (scriptable)")
+	authCmd.Flags().StringVar(&authScriptAttach, "attach", "", "Attach the given/only repo to an existing owner/repo or URL (scriptable)")
+	authCmd.Flags().BoolVar(&authScriptRotate, "rotate", false, "Revoke and mint a fresh token for the given/only repo (scriptable)")
+	authCmd.Flags().BoolVar(&authScriptRemove, "remove", false, "Revoke and unmount the token for the given/only repo, remote left as-is (scriptable)")
+	authCmd.Flags().StringVar(&authScriptName, "name", "", "Platform project/repo name for --create (default: derived from the project/repo path)")
+	authCmd.Flags().StringVar(&authScriptToken, "token", "", "GitHub fine-grained PAT — required for any GitHub operation in scriptable mode, never prompted")
+	authCmd.Flags().BoolVar(&authScriptForce, "force", false, "Allow --create/--attach to replace an already-configured repo's credential")
 
 	authCmd.AddCommand(authClaudeCmd)
 	authCmd.AddCommand(authCodexCmd)
