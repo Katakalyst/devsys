@@ -735,8 +735,9 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 	claudeVolume := agentAuthVolumeName(projectName, "claude")
 	codexVolume := agentAuthVolumeName(projectName, "codex")
 	trivyVolume := fmt.Sprintf("devsys-%s-trivy-db", projectName)
+	cacheVolume := fmt.Sprintf("devsys-%s-cache", projectName)
 
-	for _, vol := range []string{claudeVolume, codexVolume, trivyVolume} {
+	for _, vol := range []string{claudeVolume, codexVolume, trivyVolume, cacheVolume} {
 		if !podman.VolumeExists(vol) {
 			if _, err := podman.RunPodman("volume", "create", "--label", "devsys=true", vol); err != nil {
 				return fmt.Errorf("cannot create volume %s: %w", vol, err)
@@ -759,9 +760,11 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 		"--volume", claudeVolume + ":/root/.claude",
 		"--volume", codexVolume + ":/root/.codex",
 		"--volume", trivyVolume + ":/root/.cache/trivy",
+		"--volume", cacheVolume + ":/root/cache",
 		"--env", "CLAUDE_CONFIG_DIR=/root/.claude",
 		"--env", "CODEX_HOME=/root/.codex",
 		"--env", "TRIVY_CACHE_DIR=/root/.cache/trivy",
+		"--env", "DEVSYS_CACHE=/root/cache",
 		"--env", "IS_SANDBOX=1",
 	}
 

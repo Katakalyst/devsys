@@ -207,7 +207,7 @@ func TestCreateProjectContainerWithRepoSecrets_MountsPerProjectAgentVolumes(t *t
 		t.Fatalf("createProjectContainerWithRepoSecrets: %v", err)
 	}
 
-	for _, vol := range []string{"devsys-foo-claude-auth", "devsys-foo-codex-auth", "devsys-foo-trivy-db"} {
+	for _, vol := range []string{"devsys-foo-claude-auth", "devsys-foo-codex-auth", "devsys-foo-trivy-db", "devsys-foo-cache"} {
 		if !rec.HasCall("volume", "create", vol) {
 			t.Errorf("expected podman volume create for %s; calls: %v", vol, rec.Calls())
 		}
@@ -217,6 +217,9 @@ func TestCreateProjectContainerWithRepoSecrets_MountsPerProjectAgentVolumes(t *t
 	}
 	if !rec.HasCall("create", "--volume", "devsys-foo-codex-auth:/root/.codex") {
 		t.Error("expected container create to mount devsys-foo-codex-auth at /root/.codex")
+	}
+	if !rec.HasCall("create", "--volume", "devsys-foo-cache:/root/cache") {
+		t.Error("expected container create to mount devsys-foo-cache at /root/cache")
 	}
 	// A second project must get its own, distinctly-named volumes — never
 	// the shared machine-wide names this replaces.

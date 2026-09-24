@@ -22,6 +22,7 @@ func runRm(cmd *cobra.Command, args []string) error {
 	containerName := fmt.Sprintf("devsys-%s", projectName)
 	legacySecretName := fmt.Sprintf("devsys-%s-gitlab-token", projectName)
 	trivyVolume := fmt.Sprintf("devsys-%s-trivy-db", projectName)
+	cacheVolume := fmt.Sprintf("devsys-%s-cache", projectName)
 	claudeVolume := agentAuthVolumeName(projectName, "claude")
 	codexVolume := agentAuthVolumeName(projectName, "codex")
 
@@ -72,10 +73,10 @@ func runRm(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 3: Remove this project's own volumes — trivy-db, plus its Claude
-	// and Codex data volumes (chats, settings, credentials; per-project so
-	// removing them here only affects this one).
-	for _, vol := range []string{trivyVolume, claudeVolume, codexVolume} {
+	// Step 3: Remove this project's own volumes — trivy-db, cache, plus its
+	// Claude and Codex data volumes (chats, settings, credentials; per-project
+	// so removing them here only affects this one).
+	for _, vol := range []string{trivyVolume, cacheVolume, claudeVolume, codexVolume} {
 		if !podman.VolumeExists(vol) {
 			fmt.Printf("Volume %s not found — skipping.\n", vol)
 			continue
