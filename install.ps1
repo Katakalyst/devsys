@@ -1,5 +1,5 @@
-﻿#!/usr/bin/env pwsh
-# devsys installer — native Windows.
+#!/usr/bin/env pwsh
+# devsys installer - native Windows.
 #
 # Usage:
 #   irm https://github.com/katakalyst/devsys/releases/latest/download/install.ps1 | iex
@@ -7,14 +7,14 @@
 # What this script does:
 #   1. Detects CPU architecture.
 #   2. Checks that Podman is reachable (devsys's only host dependency). If not,
-#      prints the Podman install URL and exits — this script does not attempt
+#      prints the Podman install URL and exits - this script does not attempt
 #      to install Podman itself. Podman on Windows needs a WSL2-backed
-#      machine, but devsys itself does not run inside WSL2 — it is a native
+#      machine, but devsys itself does not run inside WSL2 - it is a native
 #      Windows binary, same as this installer.
 #      (No separate "required tools" check like install.sh's step 0: unlike
 #      bash, which needs external curl/wget/sed/grep binaries, everything
-#      this script needs — Invoke-RestMethod, Invoke-WebRequest, JSON
-#      parsing — is built into PowerShell itself. Podman, checked here, is
+#      this script needs - Invoke-RestMethod, Invoke-WebRequest, JSON
+#      parsing - is built into PowerShell itself. Podman, checked here, is
 #      the only real external dependency.)
 #   3. Compares the latest published devsys release against any devsys.exe
 #      already on PATH, and prints what it's about to do (install / upgrade /
@@ -23,16 +23,16 @@
 #      %LOCALAPPDATA%\Programs\devsys\devsys.exe, unless already up to date.
 #   5. Adds %LOCALAPPDATA%\Programs\devsys to the user PATH if it isn't there yet.
 #   6. Pulls the newest devsys-base image directly (no devsys subcommand
-#      involved) — looks up the current tags on GHCR, picks the highest
+#      involved) - looks up the current tags on GHCR, picks the highest
 #      semver one, and `podman pull`s it. Skipped with a message if Podman
 #      isn't fully working yet; never fatal, since `devsys init` pulls
 #      whatever it needs anyway.
-#   7. Tells you to run "devsys auth gitlab/claude/codex" next — those are
+#   7. Tells you to run "devsys auth gitlab/claude/codex" next - those are
 #      interactive and deliberately not run by this script.
 #
 # Supported: Windows x86_64 / arm64.
 # If you'd rather run devsys inside WSL2 alongside Podman, use install.sh
-# from inside your WSL2 shell instead — that also works, it's just not
+# from inside your WSL2 shell instead - that also works, it's just not
 # required the way it is for Podman itself.
 
 Set-StrictMode -Version Latest
@@ -93,7 +93,7 @@ $podmanVersion = (& podman --version) 2>$null
 if (-not $podmanVersion) { $podmanVersion = "unknown version" }
 Write-Ok "Podman found: $podmanVersion"
 
-# Warn but do not abort if "podman info" fails — the binary install should
+# Warn but do not abort if "podman info" fails - the binary install should
 # still complete. The user may just need to start their Podman machine.
 # Recorded so step 6 knows not to attempt the devsys-base pull (it would
 # just fail the same way).
@@ -101,7 +101,7 @@ $podmanInfoOk = $true
 & podman info *> $null
 if ($LASTEXITCODE -ne 0) {
     $podmanInfoOk = $false
-    Write-Fail "'podman info' failed — the Podman machine may not be running."
+    Write-Fail "'podman info' failed - the Podman machine may not be running."
     Write-Info "Run: podman machine start"
     Write-Info "(continuing with install anyway)"
 }
@@ -118,7 +118,7 @@ try {
     $latestVersion = $release.tag_name -replace '^v', ''
 } catch {
     Write-Fail "Cannot reach GitHub releases API: $($_.Exception.Message)"
-    Write-Info "Continuing with install anyway — version comparison skipped."
+    Write-Info "Continuing with install anyway - version comparison skipped."
 }
 
 $existingVersion = $null
@@ -128,7 +128,7 @@ if ($existingCmd) {
         $existingRaw = (& devsys --version) 2>$null
         if ($existingRaw -match '(\d+\.\d+\.\d+)') { $existingVersion = $Matches[1] }
     } catch {
-        # devsys on PATH but --version failed (very old build) — treat as unknown.
+        # devsys on PATH but --version failed (very old build) - treat as unknown.
     }
 }
 
@@ -191,9 +191,9 @@ if ($pathEntries -notcontains $InstallDir) {
 # 6. Pull the newest devsys-base image
 # --------------------------------------------------------------------------
 # Looks up the newest published tag directly against GHCR's OCI Distribution
-# API and pulls it — no devsys subcommand involved, since this can run
+# API and pulls it - no devsys subcommand involved, since this can run
 # entirely before devsys itself has any credentials configured. Never
-# fatal — a failure here just means the pull happens later, inside
+# fatal - a failure here just means the pull happens later, inside
 # `devsys init`, which needs the image anyway.
 
 # Get-ResponseHeaderValue: reads a header off a failed request's response
@@ -202,7 +202,7 @@ if ($pathEntries -notcontains $InstallDir) {
 # a WebHeaderCollection); PowerShell 7's throws an HttpResponseException
 # whose .Response is an HttpResponseMessage (.Headers is HttpHeaders). Both
 # collection types implement GetValues(string), so that's the one API we
-# can rely on across editions — unlike PS7-only typed properties such as
+# can rely on across editions - unlike PS7-only typed properties such as
 # HttpResponseHeaders.WwwAuthenticate.
 function Get-ResponseHeaderValue {
     param($Response, [string]$Name)
@@ -211,7 +211,7 @@ function Get-ResponseHeaderValue {
         $values = $Response.Headers.GetValues($Name)
         if ($values) { return ($values | Select-Object -First 1) }
     } catch {
-        # Header absent — both collection types throw rather than return null.
+        # Header absent - both collection types throw rather than return null.
     }
     return $null
 }
@@ -245,7 +245,7 @@ function Get-GhcrToken {
 
 if (-not $podmanInfoOk) {
     Write-Host ""
-    Write-Host "Skipping devsys-base pull — Podman is not fully working yet (see above)."
+    Write-Host "Skipping devsys-base pull - Podman is not fully working yet (see above)."
 } else {
     Write-Host ""
     Write-Host "Looking up the newest devsys-base version..."
@@ -269,7 +269,7 @@ if (-not $podmanInfoOk) {
         }
 
         # Devsys-base tags are plain semver ("1.0.0"), never "latest" or a
-        # "v"-prefixed tag (Release Process.md) — filter to that shape, then
+        # "v"-prefixed tag (Release Process.md) - filter to that shape, then
         # let [version] do numeric (not lexical) comparison: "1.10.0" must
         # sort above "1.9.5".
         $semverTags = $tagsResp.tags | Where-Object { $_ -match '^v?\d+\.\d+\.\d+$' }
@@ -291,7 +291,7 @@ if (-not $podmanInfoOk) {
         #
         # $ErrorActionPreference is "Stop" script-wide, and merging a native
         # command's stderr via 2>&1 makes PowerShell wrap each stderr line as
-        # an ErrorRecord — podman writes its normal progress ("Trying to
+        # an ErrorRecord - podman writes its normal progress ("Trying to
         # pull...", "Copying blob...") to stderr even on success, so under
         # "Stop" the very first line was promoted to a terminating error and
         # aborted the whole pull after one line. Scope the preference down to
@@ -311,28 +311,28 @@ if (-not $podmanInfoOk) {
             $pullText = $pullOutput | Out-String
             # Podman uses any stored `podman login <host>` credentials for
             # every request to that registry host, even to pull a public
-            # image — so an expired/revoked login can 403 a pull that would
+            # image - so an expired/revoked login can 403 a pull that would
             # otherwise succeed anonymously (the tags/list lookup above just
             # did, unauthenticated). Give an actionable hint for that specific
             # shape instead of a generic failure message.
             if ($pullText -match [regex]::Escape($GhcrHost) -and $pullText -match "403") {
-                Write-Fail "Pull failed — this looks like a stale login for $GhcrHost blocking an otherwise-public pull."
+                Write-Fail "Pull failed - this looks like a stale login for $GhcrHost blocking an otherwise-public pull."
                 Write-Info "podman uses any stored credentials for the whole registry host on every request, even for a public image."
                 Write-Info "Run 'podman logout $GhcrHost' to clear it (no login is needed to pull devsys-base), then re-run this pull or let 'devsys init' retry it."
             } else {
-                Write-Fail "Pull failed — 'devsys init' will retry when needed."
+                Write-Fail "Pull failed - 'devsys init' will retry when needed."
             }
         }
     }
 }
 
 # --------------------------------------------------------------------------
-# 7. Done — tell the user what to do next
+# 7. Done - tell the user what to do next
 # --------------------------------------------------------------------------
 Write-Host ""
 Write-Host "  devsys is ready."
 Write-Host ""
-Write-Host "Next, set up credentials (interactive — run these yourself):"
+Write-Host "Next, set up credentials (interactive - run these yourself):"
 Write-Host "  devsys auth gitlab    # bootstrap GitLab PAT devsys uses to create projects"
 Write-Host "  devsys auth claude    # seed or log in the shared Claude credential"
 Write-Host "  devsys auth codex     # seed or log in the shared Codex credential"
