@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/katakalyst/devsys/internal/podman"
-	"github.com/katakalyst/devsys/internal/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -274,33 +273,8 @@ func updateBaseImages(args []string, all bool) error {
 	return nil
 }
 
-// updateProjectBaseImage looks up the current newest devsys-base version at
-// the project's own existing location (no comparison against what it's
-// currently on — rebuilding is cheap and idempotent), unconditionally
-// rewrites .devsys/Containerfile's FROM line, and rebuilds.
+// updateProjectBaseImage rebuilds the project, which auto-updates the FROM
+// line to the latest published base version as part of the rebuild step.
 func updateProjectBaseImage(projectName string) error {
-	containerName := fmt.Sprintf("devsys-%s", projectName)
-	projectPath, err := getProjectPath(containerName)
-	if err != nil {
-		return fmt.Errorf("cannot determine project path — is the project initialised? %w", err)
-	}
-	containerfilePath := filepath.Join(projectPath, ".devsys", "Containerfile")
-
-	currentRef, err := containerfileFromLine(containerfilePath)
-	if err != nil {
-		return err
-	}
-	location := locationFromReference(currentRef)
-
-	newRef, err := registry.LatestReference(location)
-	if err != nil {
-		return fmt.Errorf("cannot look up newest devsys-base version: %w", err)
-	}
-
-	fmt.Printf("Updating %s: %s -> %s ...\n", projectName, currentRef, newRef)
-	if err := writeContainerfileFromLine(containerfilePath, newRef); err != nil {
-		return fmt.Errorf("cannot update Containerfile: %w", err)
-	}
-
 	return rebuildProject(projectName)
 }

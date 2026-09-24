@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/katakalyst/devsys/internal/podman"
+	"github.com/katakalyst/devsys/internal/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -38,6 +39,17 @@ func rebuildProject(projectName string) error {
 
 	containerfile := filepath.Join(projectPath, ".devsys", "Containerfile")
 	imageTag := fmt.Sprintf("devsys-%s", projectName)
+
+	// Auto-update the FROM line to the latest published base version before
+	// building. Non-blocking: if the registry is unreachable, the existing
+	// pinned version is used as-is.
+	if currentRef, err := containerfileFromLine(containerfile); err == nil {
+		if newRef, err := registry.LatestReference(locationFromReference(currentRef)); err == nil && newRef != currentRef {
+			if writeErr := writeContainerfileFromLine(containerfile, newRef); writeErr == nil {
+				fmt.Printf("  Updated base: %s -> %s\n", currentRef, newRef)
+			}
+		}
+	}
 
 	fmt.Printf("Building image %s ...\n", imageTag)
 	if err := buildImage(imageTag, containerfile, projectPath); err != nil {
