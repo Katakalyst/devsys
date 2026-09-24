@@ -202,6 +202,58 @@ func TestRunPodmanLive_DryRun_MutatingCommandsPrint(t *testing.T) {
 	}
 }
 
+func TestRunPodmanLiveCapturingStderr_DryRun_MutatingCommandsPrint(t *testing.T) {
+	setDryRun(t, true)
+	buf := captureDryRunOutput(t)
+
+	stderr, err := podman.RunPodmanLiveCapturingStderr("pull", "ghcr.io/example/image:latest")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("expected no captured stderr in dry-run, got: %q", stderr)
+	}
+	if !strings.Contains(buf.String(), "[dry-run]") {
+		t.Errorf("expected [dry-run] prefix, got: %q", buf.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RegistryAuthHint
+// ---------------------------------------------------------------------------
+
+func TestRegistryAuthHint_MatchesHostAnd403(t *testing.T) {
+	output := "Error: unable to copy from source docker://ghcr.io/katakalyst/devsys-base:1.1.1: " +
+		"Requesting bearer token: received unexpected HTTP status: 403 Forbidden"
+	hint := podman.RegistryAuthHint("ghcr.io", output)
+	if hint == "" {
+		t.Fatal("expected a hint, got none")
+	}
+	if !strings.Contains(hint, "podman logout ghcr.io") {
+		t.Errorf("expected hint to mention 'podman logout ghcr.io', got: %q", hint)
+	}
+}
+
+func TestRegistryAuthHint_NoMatchWithout403(t *testing.T) {
+	output := "Error: unable to copy from source docker://ghcr.io/katakalyst/devsys-base:1.1.1: not found"
+	if hint := podman.RegistryAuthHint("ghcr.io", output); hint != "" {
+		t.Errorf("expected no hint without a 403, got: %q", hint)
+	}
+}
+
+func TestRegistryAuthHint_NoMatchWithoutHost(t *testing.T) {
+	output := "Error: unable to copy from source docker://example.com/foo:1.0.0: 403 Forbidden"
+	if hint := podman.RegistryAuthHint("ghcr.io", output); hint != "" {
+		t.Errorf("expected no hint for a different host, got: %q", hint)
+	}
+}
+
+func TestRegistryAuthHint_EmptyHost(t *testing.T) {
+	if hint := podman.RegistryAuthHint("", "403 Forbidden"); hint != "" {
+		t.Errorf("expected no hint for empty host, got: %q", hint)
+	}
+}
+
 func TestRunPodmanLive_NoDryRun_ReadOnlyExecutes(t *testing.T) {
 	setDryRun(t, false)
 	buf := captureDryRunOutput(t)

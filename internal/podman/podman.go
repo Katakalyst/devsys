@@ -79,6 +79,48 @@ func RunPodmanLive(args ...string) error {
 	return cmd.Run()
 }
 
+// RunPodmanLiveCapturingStderr behaves like RunPodmanLive — stdout and
+// stderr both stream directly to the terminal so the caller still sees
+// live pull/build progress — but also returns the stderr text, so a
+// failure can be pattern-matched (e.g. by RegistryAuthHint) without losing
+// that live output.
+func RunPodmanLiveCapturingStderr(args ...string) (string, error) {
+	if DryRun && !isReadOnly(args) {
+		fmt.Fprintf(DryRunOutput, "[dry-run] podman %s\n", strings.Join(args, " "))
+		return "", nil
+	}
+	cmd := ExecCmd("podman", args...)
+	cmd.Stdout = os.Stdout
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	err := cmd.Run()
+	return stderrBuf.String(), err
+}
+
+// RegistryAuthHint inspects podman pull/build output for the specific shape
+// of a stale stored registry login blocking an otherwise-anonymous pull: a
+// 403 from host while fetching a bearer token. Podman uses any credentials
+// stored by `podman login <host>` for every request to that registry host,
+// even to pull a public image — so an expired or revoked login blocks a
+// pull that would otherwise succeed anonymously. Returns "" when output
+// doesn't match this shape, so the caller falls back to the raw error.
+func RegistryAuthHint(host, output string) string {
+	if host == "" || !strings.Contains(output, host) {
+		return ""
+	}
+	if !strings.Contains(output, "403") {
+		return ""
+	}
+	return fmt.Sprintf(
+		"This looks like a stale login for %s blocking an otherwise-public pull: "+
+			"podman uses any stored credentials for the whole registry host on every "+
+			"request, even for a public image. Run 'podman logout %s' to clear it "+
+			"(no login is needed to pull devsys-base) and try again. If you "+
+			"deliberately need to stay logged in (e.g. to push images), log back in "+
+			"with a fresh, valid token instead: 'podman login %s'.",
+		host, host, host)
+}
+
 // ExecInteractive runs a command inside a container with stdin/stdout/stderr
 // connected directly to the calling terminal.
 // Skipped (prints intent) when DryRun is true.

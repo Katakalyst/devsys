@@ -285,11 +285,27 @@ if (-not $podmanInfoOk) {
 
     if ($baseRef) {
         Write-Host "Pulling $baseRef ..."
-        & podman pull $baseRef
+        # Captured (not just streamed) so a failure can be pattern-matched below
+        # for the stale-login shape, while ForEach-Object still prints each
+        # line as it arrives so pull progress stays visible live.
+        $pullOutput = & podman pull $baseRef 2>&1 | ForEach-Object { Write-Host $_; $_ }
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Pulled $baseRef."
         } else {
-            Write-Fail "Pull failed — 'devsys init' will retry when needed."
+            $pullText = $pullOutput | Out-String
+            # Podman uses any stored `podman login <host>` credentials for
+            # every request to that registry host, even to pull a public
+            # image — so an expired/revoked login can 403 a pull that would
+            # otherwise succeed anonymously (the tags/list lookup above just
+            # did, unauthenticated). Give an actionable hint for that specific
+            # shape instead of a generic failure message.
+            if ($pullText -match [regex]::Escape($GhcrHost) -and $pullText -match "403") {
+                Write-Fail "Pull failed — this looks like a stale login for $GhcrHost blocking an otherwise-public pull."
+                Write-Info "podman uses any stored credentials for the whole registry host on every request, even for a public image."
+                Write-Info "Run 'podman logout $GhcrHost' to clear it (no login is needed to pull devsys-base), then re-run this pull or let 'devsys init' retry it."
+            } else {
+                Write-Fail "Pull failed — 'devsys init' will retry when needed."
+            }
         }
     }
 }

@@ -1,5 +1,17 @@
 package cmd
 
+import "strings"
+
+// imageHost returns the registry host portion of a "host/repo/path" image
+// location (e.g. "ghcr.io" from devsysBaseImage).
+func imageHost(location string) string {
+	host, _, found := strings.Cut(location, "/")
+	if !found {
+		return ""
+	}
+	return host
+}
+
 // devsysBaseImage is the fixed registry LOCATION (host + repo path) the
 // shared meta-tooling image is published to — never a version, never a
 // floating tag. Consulted from Go in exactly one bootstrap moment where no

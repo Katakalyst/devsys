@@ -19,6 +19,27 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// imageHost
+// ---------------------------------------------------------------------------
+
+func TestImageHost(t *testing.T) {
+	cases := []struct {
+		location string
+		want     string
+	}{
+		{"ghcr.io/katakalyst/devsys-base", "ghcr.io"},
+		{"ghcr.io/katakalyst/devsys-base:1.1.2", "ghcr.io"},
+		{"registry.example.com:5000/team/image", "registry.example.com:5000"},
+		{"noslash", ""},
+	}
+	for _, c := range cases {
+		if got := imageHost(c.location); got != c.want {
+			t.Errorf("imageHost(%q) = %q, want %q", c.location, got, c.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // containerToProject
 // ---------------------------------------------------------------------------
 

@@ -212,7 +212,10 @@ func authSeedAgentVolume(volumeName, hostDir string, force bool) error {
 		return fmt.Errorf("cannot look up newest devsys-base version: %w", err)
 	}
 	fmt.Printf("Pulling %s ...\n", baseRef)
-	if err := podman.RunPodmanLive("pull", baseRef); err != nil {
+	if stderr, err := podman.RunPodmanLiveCapturingStderr("pull", baseRef); err != nil {
+		if hint := podman.RegistryAuthHint(imageHost(devsysBaseImage), stderr); hint != "" {
+			return fmt.Errorf("cannot pull devsys-base image: %w\n%s", err, hint)
+		}
 		return fmt.Errorf("cannot pull devsys-base image: %w", err)
 	}
 

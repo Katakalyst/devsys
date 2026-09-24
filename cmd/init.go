@@ -230,6 +230,14 @@ func buildImage(tag, containerfile, contextPath string) error {
 		"--label", "devsys.containerfile-hash="+cfHash,
 		"--label", "devsys.ports-hash="+portsHash,
 		"-f", containerfile, contextPath)
+	if err != nil {
+		// Every project Containerfile starts "FROM ghcr.io/.../devsys-base:...",
+		// so a build can fail the same way a direct pull can: a stale stored
+		// ghcr.io login blocking the base layer's otherwise-anonymous pull.
+		if hint := podman.RegistryAuthHint(imageHost(devsysBaseImage), err.Error()); hint != "" {
+			return fmt.Errorf("%w\n%s", err, hint)
+		}
+	}
 	return err
 }
 
