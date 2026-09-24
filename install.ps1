@@ -196,17 +196,39 @@ if ($pathEntries -notcontains $InstallDir) {
 # fatal — a failure here just means the pull happens later, inside
 # `devsys init`, which needs the image anyway.
 
+# Get-ResponseHeaderValue: reads a header off a failed request's response
+# in an edition-agnostic way. Windows PowerShell 5.1's Invoke-RestMethod
+# throws a WebException whose .Response is an HttpWebResponse (.Headers is
+# a WebHeaderCollection); PowerShell 7's throws an HttpResponseException
+# whose .Response is an HttpResponseMessage (.Headers is HttpHeaders). Both
+# collection types implement GetValues(string), so that's the one API we
+# can rely on across editions — unlike PS7-only typed properties such as
+# HttpResponseHeaders.WwwAuthenticate.
+function Get-ResponseHeaderValue {
+    param($Response, [string]$Name)
+
+    try {
+        $values = $Response.Headers.GetValues($Name)
+        if ($values) { return ($values | Select-Object -First 1) }
+    } catch {
+        # Header absent — both collection types throw rather than return null.
+    }
+    return $null
+}
+
 # Get-GhcrToken: implements the registry token-auth challenge (RFC-shaped
 # WWW-Authenticate: Bearer), required by GHCR even for anonymous/public
 # reads. Mirrors fetchAnonymousToken in internal/registry/registry.go.
+# Takes the raw header string (not a typed AuthenticationHeaderValue,
+# which is PS7-only) so it works under Windows PowerShell 5.1 too.
 function Get-GhcrToken {
-    param([System.Net.Http.Headers.AuthenticationHeaderValue]$WwwAuthenticate)
+    param([string]$WwwAuthenticateHeader)
 
-    if ($WwwAuthenticate.Scheme -ne "Bearer") {
-        throw "Unsupported WWW-Authenticate scheme: $($WwwAuthenticate.Scheme)"
+    if ($WwwAuthenticateHeader -notmatch '^\s*Bearer\s+(.*)$') {
+        throw "Unsupported WWW-Authenticate scheme: $WwwAuthenticateHeader"
     }
     $params = @{}
-    foreach ($pair in ($WwwAuthenticate.Parameter -split ',')) {
+    foreach ($pair in ($Matches[1] -split ',')) {
         if ($pair -match '^\s*(\w+)="([^"]*)"\s*$') {
             $params[$Matches[1]] = $Matches[2]
         }
@@ -237,9 +259,9 @@ if (-not $podmanInfoOk) {
         } catch {
             $webResp = $_.Exception.Response
             if ($webResp -and [int]$webResp.StatusCode -eq 401) {
-                $wwwAuth = $webResp.Headers.WwwAuthenticate | Select-Object -First 1
+                $wwwAuth = Get-ResponseHeaderValue -Response $webResp -Name "WWW-Authenticate"
                 if (-not $wwwAuth) { throw "401 response had no WWW-Authenticate header" }
-                $token = Get-GhcrToken -WwwAuthenticate $wwwAuth
+                $token = Get-GhcrToken -WwwAuthenticateHeader $wwwAuth
                 $tagsResp = Invoke-RestMethod -Uri $tagsUrl -Headers @{ Authorization = "Bearer $token" } -ErrorAction Stop
             } else {
                 throw

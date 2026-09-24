@@ -22,6 +22,25 @@ import (
 // If the binary lives in the expected install directory
 // (%LOCALAPPDATA%\Programs\devsys), the directory itself is also removed
 // after the binary is deleted.
+//
+// The delete commands are written to a temporary .bat file and run via
+// "cmd /c call <path>" rather than passed as one inline string. An earlier
+// version built the whole "ping & del "path" & rmdir "path"" line as a
+// single exec.Command argument; since that argument contains both spaces
+// and embedded quotes, Go's Windows argument escaping (syscall.EscapeArg)
+// wraps the entire thing in an outer quote pair and backslash-escapes the
+// inner quotes — the CRT/CommandLineToArgvW convention. cmd.exe does not
+// understand backslash-escaped quotes: its own /c quote-stripping rule
+// (see `cmd /?`) only preserves quotes when there are exactly two of them
+// with no special characters (like &) between them, so it instead falls
+// back to stripping just the first and last quote characters of the whole
+// line, leaving stray backslash-quote sequences glued onto the path
+// tokens. del/rmdir then silently fail to match the real paths — with
+// HideWindow set, that failure is invisible, and the binary/install
+// directory are left behind even though "devsys uninstall" reports
+// success. A bare file path (the .bat file) has no embedded quotes or
+// special characters, so it round-trips through both escaping schemes
+// intact regardless of spaces in the path.
 func removeBinary(path string) {
 	dir := filepath.Dir(path)
 	localAppData := os.Getenv("LOCALAPPDATA")
@@ -32,16 +51,28 @@ func removeBinary(path string) {
 
 	// Only remove the install directory when the binary is actually in the
 	// expected location — never rmdir an arbitrary directory.
-	var shellCmd string
+	// "ping -n 2" waits ~1 second — enough for this process to fully exit
+	// before del/rmdir run.
+	lines := []string{
+		"@echo off",
+		"ping -n 2 127.0.0.1 >nul",
+		fmt.Sprintf(`del /f /q "%s"`, path),
+	}
 	if installDir != "" && strings.EqualFold(dir, installDir) {
-		shellCmd = fmt.Sprintf(`ping -n 2 127.0.0.1 >nul & del /f /q "%s" & rmdir /s /q "%s"`, path, dir)
-	} else {
-		shellCmd = fmt.Sprintf(`ping -n 2 127.0.0.1 >nul & del /f /q "%s"`, path)
+		lines = append(lines, fmt.Sprintf(`rmdir /s /q "%s"`, dir))
+	}
+	batPath := filepath.Join(os.TempDir(), "devsys-uninstall.bat")
+	// Self-delete last so the temp file doesn't linger.
+	lines = append(lines, fmt.Sprintf(`del /f /q "%s"`, batPath))
+
+	if err := os.WriteFile(batPath, []byte(strings.Join(lines, "\r\n")+"\r\n"), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: cannot schedule binary removal: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  Remove it manually: rmdir /s /q %q\n", dir)
+		return
 	}
 
-	// "ping -n 2" waits ~1 second — enough for this process to fully exit
-	// before del/rmdir run. HideWindow prevents a console window from flashing.
-	cmd := exec.Command("cmd", "/c", shellCmd)
+	// HideWindow prevents a console window from flashing.
+	cmd := exec.Command("cmd", "/c", "call", batPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: cannot schedule binary removal: %v\n", err)
