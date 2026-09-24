@@ -27,11 +27,12 @@
 #      step 0) — skipped with a message on wget-only systems, or if Podman
 #      isn't fully working yet; neither case is fatal, since `devsys init`
 #      pulls whatever it needs anyway.
-#   7. Tells you to run "devsys auth gitlab/claude/codex" next — those are
-#      interactive and deliberately not run by this script: it can be
-#      invoked as "curl | sh", which leaves stdin bound to the script body,
-#      not a terminal, so anything needing a prompt has to happen
-#      afterward, from a real shell.
+#   7. Tells you to run "devsys auth gitlab", then "devsys init", then
+#      "devsys auth claude/codex" for that project — those are interactive
+#      and deliberately not run by this script: it can be invoked as
+#      "curl | sh", which leaves stdin bound to the script body, not a
+#      terminal, so anything needing a prompt has to happen afterward,
+#      from a real shell.
 #
 # Supported platforms: Linux x86_64 / arm64, macOS x86_64 / arm64 (Apple Silicon).
 #
@@ -386,9 +387,11 @@ printf '  devsys is ready.\n'
 printf '\n'
 printf 'Next, set up credentials (interactive — run these yourself, not from a pipe):\n'
 printf '  devsys auth gitlab    # bootstrap GitLab PAT devsys uses to create projects\n'
-printf '  devsys auth claude    # seed or log in the shared Claude credential\n'
-printf '  devsys auth codex     # seed or log in the shared Codex credential\n'
 printf '\n'
-printf 'Then:\n'
+printf 'Then create a project:\n'
 printf '  devsys init <path> <name>\n'
+printf '\n'
+printf "Then seed that project's own Claude/Codex credentials (each project has its own):\n"
+printf '  devsys auth claude <name>\n'
+printf '  devsys auth codex <name>\n'
 printf '\n'

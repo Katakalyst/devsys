@@ -27,8 +27,9 @@
 #      semver one, and `podman pull`s it. Skipped with a message if Podman
 #      isn't fully working yet; never fatal, since `devsys init` pulls
 #      whatever it needs anyway.
-#   7. Tells you to run "devsys auth gitlab/claude/codex" next - those are
-#      interactive and deliberately not run by this script.
+#   7. Tells you to run "devsys auth gitlab", then "devsys init", then
+#      "devsys auth claude/codex" for that project - those are interactive
+#      and deliberately not run by this script.
 #
 # Supported: Windows x86_64 / arm64.
 # If you'd rather run devsys inside WSL2 alongside Podman, use install.sh
@@ -334,9 +335,11 @@ Write-Host "  devsys is ready."
 Write-Host ""
 Write-Host "Next, set up credentials (interactive - run these yourself):"
 Write-Host "  devsys auth gitlab    # bootstrap GitLab PAT devsys uses to create projects"
-Write-Host "  devsys auth claude    # seed or log in the shared Claude credential"
-Write-Host "  devsys auth codex     # seed or log in the shared Codex credential"
 Write-Host ""
-Write-Host "Then:"
+Write-Host "Then create a project:"
 Write-Host "  devsys init <path> <name>"
+Write-Host ""
+Write-Host "Then seed that project's own Claude/Codex credentials (each project has its own):"
+Write-Host "  devsys auth claude <name>"
+Write-Host "  devsys auth codex <name>"
 Write-Host ""
