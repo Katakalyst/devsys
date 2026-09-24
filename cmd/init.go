@@ -225,7 +225,9 @@ func buildImage(tag, containerfile, contextPath string) error {
 	}
 	cfHash := fmt.Sprintf("%x", sha256.Sum256(data))
 	portsHash := portsFileHash(contextPath)
-	_, err = podman.RunPodman("build", "-t", tag,
+	// RunPodmanLiveCapturingStderr streams build output to the terminal in
+	// real time while still capturing stderr for the auth hint check on failure.
+	stderr, err := podman.RunPodmanLiveCapturingStderr("build", "-t", tag,
 		"--pull=newer",
 		"--label", "devsys=true",
 		"--label", "devsys.containerfile-hash="+cfHash,
@@ -235,11 +237,12 @@ func buildImage(tag, containerfile, contextPath string) error {
 		// Every project Containerfile starts "FROM ghcr.io/.../devsys-base:...",
 		// so a build can fail the same way a direct pull can: a stale stored
 		// ghcr.io login blocking the base layer's otherwise-anonymous pull.
-		if hint := podman.RegistryAuthHint(imageHost(devsysBaseImage), err.Error()); hint != "" {
-			return fmt.Errorf("%w\n%s", err, hint)
+		if hint := podman.RegistryAuthHint(imageHost(devsysBaseImage), stderr); hint != "" {
+			return fmt.Errorf("podman build: %w\n%s", err, hint)
 		}
+		return fmt.Errorf("podman build: %w", err)
 	}
-	return err
+	return nil
 }
 
 // defaultWorkspaceDest is the in-container path the project workspace is
