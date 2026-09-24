@@ -1,15 +1,12 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/katakalyst/devsys/internal/podman"
-	"github.com/katakalyst/devsys/internal/registry"
 	"github.com/katakalyst/devsys/internal/workspace"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -17,20 +14,17 @@ import (
 
 // authCmd groups every credential-provisioning command that used to be
 // bundled, one-shot, inside `devsys setup`. Splitting these out makes each
-// one independently rerunnable — most importantly for Claude/Codex, where
-// there was previously no way back into the auth volume once it had been
-// seeded once (e.g. to switch from a subscription login to an API key, or to
-// reauthenticate after a logout). Claude/Codex credentials are per-project
-// (documents/TODO.md's per-project agent credential item), not shared across
-// every project on the machine — each project can run a different
-// subscription/API key and a different billing boundary.
+// one independently rerunnable. Claude/Codex auth is intentionally not managed
+// here — each agent authenticates itself inside its container on first run, and
+// the per-project volumes (devsys-<project>-claude-auth / -codex-auth) persist
+// that state (chats, settings, credentials) across container restarts. No host
+// seeding needed.
 var authCmd = &cobra.Command{
 	Use:   "auth",
-	Short: "Manage per-project Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials",
-	Long: `Manage per-project Claude/Codex credentials, bootstrap platform PATs, and per-repo git credentials.
+	Short: "Bootstrap platform PATs and manage per-repo git credentials",
+	Long: `Bootstrap platform PATs and manage per-repo git credentials.
 
-  devsys auth claude|codex <project> [--force]                seed/reseed that project's own Claude/Codex volume
-  devsys auth gitlab|github [--force]                          bootstrap subcommands (machine-wide, unlike claude/codex above)
+  devsys auth gitlab|github [--force]                          bootstrap subcommands (machine-wide)
   devsys auth <project>                                       interactive per-repo credential listing for a project
   devsys auth <project> [repo] [remote] [platform] --create [--name <name>] [--force]
   devsys auth <project> [repo] [remote] [platform] --attach <owner/repo-or-url> [--force]
@@ -51,8 +45,6 @@ var authCmd = &cobra.Command{
 	RunE: runAuthProject,
 }
 
-var authClaudeForce bool
-var authCodexForce bool
 var authGitLabForce bool
 var authGitHubForce bool
 
@@ -63,48 +55,11 @@ var authGitHubForce bool
 // for per-invocation override. Populated at startup by loadGitHubHostFromBootstrap.
 var authGitHubURL = "https://github.com"
 
-var authClaudeCmd = &cobra.Command{
-	Use:   "claude <project>",
-	Short: "Seed or reseed a project's own Claude Code credential volume",
-	Args:  cobra.RangeArgs(0, 1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			fmt.Println("Project name required. Usage: devsys auth claude <project>")
-			fmt.Println("  List projects: devsys list")
-			return nil
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		return authSeedAgentVolume(agentAuthVolumeName(args[0], "claude"), filepath.Join(home, ".claude"), authClaudeForce)
-	},
-}
-
-var authCodexCmd = &cobra.Command{
-	Use:   "codex <project>",
-	Short: "Seed or reseed a project's own Codex credential volume",
-	Args:  cobra.RangeArgs(0, 1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			fmt.Println("Project name required. Usage: devsys auth codex <project>")
-			fmt.Println("  List projects: devsys list")
-			return nil
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		return authSeedAgentVolume(agentAuthVolumeName(args[0], "codex"), filepath.Join(home, ".codex"), authCodexForce)
-	},
-}
-
-// agentAuthVolumeName builds a project's own Claude/Codex credential volume
-// name — devsys-<project>-<agent>-auth. Each project has its own login
-// (subscription vs. API key, different billing boundaries), not one shared
-// machine-wide volume: same per-project naming principle already used for
-// devsys-<project>-<repo-id>-<platform>-token and
-// devsys-<project>-trivy-db (documents/TODO.md).
+// agentAuthVolumeName returns the name of a project's per-agent data volume
+// (devsys-<project>-<agent>-auth). Each project gets its own volume so chats,
+// settings, and credentials are isolated per project and persist across
+// container restarts. The agent authenticates itself inside the container on
+// first run — no host seeding.
 func agentAuthVolumeName(projectName, agent string) string {
 	return fmt.Sprintf("devsys-%s-%s-auth", projectName, agent)
 }
@@ -122,8 +77,6 @@ var authGitHubCmd = &cobra.Command{
 }
 
 func init() {
-	authClaudeCmd.Flags().BoolVar(&authClaudeForce, "force", false, "Reseed even if the volume already has credentials, overwriting them")
-	authCodexCmd.Flags().BoolVar(&authCodexForce, "force", false, "Reseed even if the volume already has credentials, overwriting them")
 	authGitLabCmd.Flags().BoolVar(&authGitLabForce, "force", false, "Replace the existing bootstrap PAT secret")
 	authGitHubCmd.Flags().BoolVar(&authGitHubForce, "force", false, "Replace the existing bootstrap PAT secret")
 	// --github-url is a PersistentFlag on authCmd so it is available to all
@@ -145,128 +98,8 @@ func init() {
 	authCmd.Flags().StringVar(&authScriptExpiresAt, "expires-at", "", "Expiration (YYYY-MM-DD) the --token PAT was given on github.com, self-reported since GitHub's API never exposes it — optional, blank means \"No expiration\"/unknown; GitLab ignores this, its expiry is always known from minting")
 	authCmd.Flags().BoolVar(&authScriptForce, "force", false, "Allow --create/--attach to replace an already-configured repo's credential")
 
-	authCmd.AddCommand(authClaudeCmd)
-	authCmd.AddCommand(authCodexCmd)
 	authCmd.AddCommand(authGitLabCmd)
 	authCmd.AddCommand(authGitHubCmd)
-}
-
-// authSeedAgentVolume seeds volumeName from hostDir, the same one-time-copy
-// mechanism `devsys setup` used to perform inline (Container Architecture
-// Spec, Section 5.3 — a seed, never a live mount). Unlike the old inline
-// version, this is meant to be rerun: with --force it clears and re-copies
-// even if the volume already has content, which is the actual mechanism for
-// switching credentials (e.g. subscription login -> API key) rather than
-// only ever seeding once at machine bootstrap.
-func authSeedAgentVolume(volumeName, hostDir string, force bool) error {
-	reader := bufio.NewReader(os.Stdin)
-
-	info, statErr := os.Stat(hostDir)
-	hostHasCreds := statErr == nil && info.IsDir()
-
-	exists := podman.VolumeExists(volumeName)
-	hasContent := exists && volumeHasContent(volumeName)
-
-	if hasContent && !force {
-		fmt.Printf("%s already has credentials.\n", volumeName)
-		fmt.Println("  Pass --force to reseed from the host, or log in again from inside any 'devsys enter' session.")
-		return nil
-	}
-
-	if !hostHasCreds {
-		if !exists {
-			if _, err := podman.RunPodman("volume", "create", "--label", "devsys=true", volumeName); err != nil {
-				return fmt.Errorf("cannot create volume %s: %w", volumeName, err)
-			}
-		}
-		fmt.Printf("No existing credentials found at %s.\n", hostDir)
-		fmt.Println("  Nothing to seed — log in from inside any 'devsys enter' session instead; the first run there does a normal in-container login.")
-		return nil
-	}
-
-	prompt := fmt.Sprintf("Seed %s into volume %s?", hostDir, volumeName)
-	if hasContent {
-		prompt = fmt.Sprintf("Overwrite %s's existing credentials from %s?", volumeName, hostDir)
-	}
-	if !confirm(reader, prompt) {
-		// Still create the volume if it doesn't exist — the user may want to
-		// log in from inside a 'devsys enter' session instead of seeding from
-		// the host, and that path needs the volume to already exist.
-		if !exists {
-			if _, err := podman.RunPodman("volume", "create", "--label", "devsys=true", volumeName); err != nil {
-				return fmt.Errorf("cannot create volume %s: %w", volumeName, err)
-			}
-		}
-		fmt.Println("  Skipped seeding from host. Log in from inside any 'devsys enter' session instead.")
-		return nil
-	}
-
-	if !exists {
-		if _, err := podman.RunPodman("volume", "create", "--label", "devsys=true", volumeName); err != nil {
-			return fmt.Errorf("cannot create volume %s: %w", volumeName, err)
-		}
-	}
-
-	baseRef, err := registry.LatestReference(devsysBaseImage)
-	if err != nil {
-		return fmt.Errorf("cannot look up newest devsys-base version: %w", err)
-	}
-	fmt.Printf("Pulling %s ...\n", baseRef)
-	if stderr, err := podman.RunPodmanLiveCapturingStderr("pull", baseRef); err != nil {
-		if hint := podman.RegistryAuthHint(imageHost(devsysBaseImage), stderr); hint != "" {
-			return fmt.Errorf("cannot pull devsys-base image: %w\n%s", err, hint)
-		}
-		return fmt.Errorf("cannot pull devsys-base image: %w", err)
-	}
-
-	fmt.Printf("Seeding %s into %s ...\n", hostDir, volumeName)
-	if err := podman.RunPodmanLive(
-		"run", "--rm",
-		"--volume", hostDir+":/src:ro",
-		"--volume", volumeName+":/dst",
-		"--entrypoint", "sh",
-		baseRef,
-		// Clear first so a --force reseed fully replaces stale credential
-		// files rather than merging old and new (the actual mechanism for
-		// "switch this volume to a different credential").
-		// If .claude.json isn't present in the source (Claude Code only writes
-		// it during active sessions, so it's absent between sessions), restore
-		// the latest backup — Claude Code v2.1+ requires it to skip onboarding;
-		// without it the container treats every start as a fresh install and
-		// prompts for login even though .credentials.json is present.
-		"-c", `rm -rf /dst/.[!.]* /dst/* 2>/dev/null; cp -a /src/. /dst/; ` +
-			`if [ ! -f /dst/.claude.json ]; then ` +
-			`latest=$(ls -t /dst/backups/.claude.json.backup.* 2>/dev/null | head -1); ` +
-			`if [ -n "$latest" ]; then cp "$latest" /dst/.claude.json; fi; fi`,
-	); err != nil {
-		return fmt.Errorf("cannot seed volume %s: %w", volumeName, err)
-	}
-	fmt.Printf("  Seeded %s.\n", volumeName)
-	return nil
-}
-
-// volumeHasContent reports whether volumeName already holds any files, by
-// running a disposable container against the current devsys-base image.
-// Podman auto-creates a named volume empty the first time it's referenced
-// (e.g. by createProjectContainerWithRepoSecrets), so VolumeExists alone can't distinguish
-// "never authenticated" from "authenticated" — this can. Used by both the
-// auth commands (to decide whether a reseed needs --force/confirmation) and
-// doctor/enter's "no auth set" checks.
-func volumeHasContent(volumeName string) bool {
-	baseRef, err := registry.LatestReference(devsysBaseImage)
-	if err != nil {
-		// Can't check — assume content is present so callers don't
-		// needlessly warn or overwrite on a transient registry failure.
-		return true
-	}
-	out, err := podman.RunPodman(
-		"run", "--rm",
-		"--volume", volumeName+":/data:ro",
-		"--entrypoint", "sh",
-		baseRef,
-		"-c", "ls -A /data 2>/dev/null",
-	)
-	return err == nil && strings.TrimSpace(out) != ""
 }
 
 // loadGitHubHostFromBootstrap reads the GitHub base URL stored as a label on

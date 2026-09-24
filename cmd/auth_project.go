@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -724,10 +725,12 @@ func recreateContainerForAuth(projectName string, interactive bool) error {
 // Credential Spec §7's multi-token fix). Used by this file's own
 // recreateContainerForAuth, plus cmd/init.go and cmd/rebuild.go.
 //
-// Claude/Codex auth volumes are per-project (devsys-<project>-claude-auth/
-// -codex-auth, documents/TODO.md), same as the trivy DB volume already was —
-// not the single machine-wide devsys-claude-auth/devsys-codex-auth every
-// project used to share.
+// Claude/Codex volumes are per-project (devsys-<project>-claude-auth/
+// -codex-auth). Each agent authenticates itself inside the container on first
+// run; the volume persists chats, settings, and credentials across restarts.
+// On first creation (volume didn't exist yet), settings.json is copied from
+// the host if present — a one-time convenience seed that never overwrites
+// existing content and never touches credentials.
 func createProjectContainerWithRepoSecrets(containerName, projectName, projectPath, imageTag string) error {
 	claudeVolume := agentAuthVolumeName(projectName, "claude")
 	codexVolume := agentAuthVolumeName(projectName, "codex")
@@ -739,6 +742,13 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 				return fmt.Errorf("cannot create volume %s: %w", vol, err)
 			}
 		}
+	}
+
+	// Seed settings (non-destructively) from host on first creation.
+	home, err := os.UserHomeDir()
+	if err == nil {
+		seedAgentSettings(claudeVolume, filepath.Join(home, ".claude", "settings.json"), imageTag)
+		seedAgentSettings(codexVolume, filepath.Join(home, ".codex", "settings.json"), imageTag)
 	}
 
 	args := []string{
@@ -774,6 +784,36 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 
 	_, err = podman.RunPodman(args...)
 	return err
+}
+
+// seedAgentSettings copies settings.json from the host into a named volume,
+// but only when the volume is empty — once on first creation, never again.
+// Preserves any data the agent has written (chats, credentials) on all
+// subsequent calls. Silently skips when the host file is absent, the volume
+// already has content, or any podman call fails.
+func seedAgentSettings(volumeName, hostSettingsFile, imageTag string) {
+	if _, err := os.Stat(hostSettingsFile); err != nil {
+		return // nothing to seed
+	}
+	// Only seed an empty volume.
+	out, err := podman.RunPodman(
+		"run", "--rm",
+		"--volume", volumeName+":/data:ro",
+		"--entrypoint", "sh",
+		imageTag,
+		"-c", "ls -A /data 2>/dev/null",
+	)
+	if err != nil || strings.TrimSpace(out) != "" {
+		return
+	}
+	_ = podman.RunPodmanLive(
+		"run", "--rm",
+		"--volume", hostSettingsFile+":/src/settings.json:ro",
+		"--volume", volumeName+":/data",
+		"--entrypoint", "sh",
+		imageTag,
+		"-c", "cp /src/settings.json /data/settings.json",
+	)
 }
 
 // projectRepoSecretNames derives the exact per-repo credential secret names

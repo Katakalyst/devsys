@@ -73,8 +73,8 @@ func runRm(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 3: Remove this project's own volumes — trivy-db, plus its Claude
-	// and Codex auth volumes (per-project, not shared across other projects
-	// on the machine, so removing them here only affects this one).
+	// and Codex data volumes (chats, settings, credentials; per-project so
+	// removing them here only affects this one).
 	for _, vol := range []string{trivyVolume, claudeVolume, codexVolume} {
 		if !podman.VolumeExists(vol) {
 			fmt.Printf("Volume %s not found — skipping.\n", vol)

@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -72,42 +71,6 @@ func skipStalenessChecks(t *testing.T, projectName string) {
 	redirectCacheDir(t)
 	markChecked("cli-version")
 	markChecked("base-image-" + projectName)
-	markChecked(projectName + "-claude-auth")
-	markChecked(projectName + "-codex-auth")
-}
-
-// checkAgentAuth is per-project (documents/TODO.md's per-project agent
-// credential item) — a warning for one project must name that project and
-// point at that project's own auth command, and must not be silenced by
-// another project's already-throttled cache key.
-func TestCheckAgentAuth_PerProjectWarningAndThrottle(t *testing.T) {
-	redirectCacheDir(t)
-	podmanfake.Install(t, podmanfake.Options{VolumeExists: false})
-
-	origStderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("capture stderr: %v", err)
-	}
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = origStderr })
-
-	checkAgentAuth("foo", "claude")
-	checkAgentAuth("bar", "claude") // different project — must not be throttled by foo's check
-
-	w.Close()
-	os.Stderr = origStderr
-	out, _ := io.ReadAll(r)
-	got := string(out)
-
-	for _, want := range []string{
-		"no claude auth set for 'foo'", "devsys auth claude foo",
-		"no claude auth set for 'bar'", "devsys auth claude bar",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("output should contain %q, got %q", want, got)
-		}
-	}
 }
 
 func TestRunEnter_ContainerRunning_OpensBashSession(t *testing.T) {
