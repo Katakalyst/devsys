@@ -65,7 +65,12 @@ func rebuildProject(projectName string) error {
 	return nil
 }
 
-// getProjectPath reads the workspace mount path from a container's configuration.
+// getProjectPath reads the workspace mount path from a container's
+// configuration. On Windows, a Podman machine backed by WSL2 reports the
+// mount's Source in the machine's own path form ("/mnt/c/Users/...")
+// rather than the native Windows path actually passed to `podman create
+// -v` — normalizeMountSource converts it back (a no-op on other
+// platforms).
 func getProjectPath(containerName string) (string, error) {
 	out, err := podman.RunPodman(
 		"inspect", "--format",
@@ -78,7 +83,7 @@ func getProjectPath(containerName string) (string, error) {
 	if out == "" {
 		return "", fmt.Errorf("no %s mount found on container %s", defaultWorkspaceDest, containerName)
 	}
-	return out, nil
+	return normalizeMountSource(out), nil
 }
 
 // containerToProject strips the "devsys-" prefix from a container name.
