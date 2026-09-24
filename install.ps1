@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # devsys installer — native Windows.
 #
 # Usage:
@@ -288,7 +288,23 @@ if (-not $podmanInfoOk) {
         # Captured (not just streamed) so a failure can be pattern-matched below
         # for the stale-login shape, while ForEach-Object still prints each
         # line as it arrives so pull progress stays visible live.
-        $pullOutput = & podman pull $baseRef 2>&1 | ForEach-Object { Write-Host $_; $_ }
+        #
+        # $ErrorActionPreference is "Stop" script-wide, and merging a native
+        # command's stderr via 2>&1 makes PowerShell wrap each stderr line as
+        # an ErrorRecord — podman writes its normal progress ("Trying to
+        # pull...", "Copying blob...") to stderr even on success, so under
+        # "Stop" the very first line was promoted to a terminating error and
+        # aborted the whole pull after one line. Scope the preference down to
+        # "Continue" for just this call so stderr lines are ordinary output
+        # again, matching how the un-merged `& podman pull $baseRef` behaved
+        # before this capture was added.
+        $prevErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $pullOutput = & podman pull $baseRef 2>&1 | ForEach-Object { Write-Host $_; $_ }
+        } finally {
+            $ErrorActionPreference = $prevErrorActionPreference
+        }
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Pulled $baseRef."
         } else {
