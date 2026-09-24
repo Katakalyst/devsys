@@ -150,14 +150,12 @@ func checkPortsStale(projectName string) error {
 }
 
 // checkStaleness prints a non-blocking warning if this project's base image
-// is behind the newest available version, throttled via a freely-deletable
-// cache marker — never a live lookup on every `devsys enter`, the single
-// most frequently run command in the system.
+// is behind the newest available version. Checked live on every `devsys
+// enter` (previously throttled to once per 24h — dropped: a cached "you're
+// up to date" answer actively works against noticing a version that shipped
+// minutes ago, which defeats the point of checking at all).
 func checkStaleness(projectName string) {
-	if !checkThrottled("base-image-" + projectName) {
-		warnIfBaseImageOutdated(projectName)
-		markChecked("base-image-" + projectName)
-	}
+	warnIfBaseImageOutdated(projectName)
 }
 
 // warnIfCLIOutdated prints a warning if the running devsys binary is behind

@@ -21,22 +21,22 @@ Claude, Codex, and GitLab integration baked in.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		loadGitHubHostFromBootstrap()
 	},
-	// Shows a throttled, non-blocking "devsys is outdated" notice after any
-	// command (devsys CLI Spec, Section 12.5 — modeled on npm's own
-	// update-notifier: a background check on ordinary use, not a separate
-	// command you have to remember to run). Skipped for `update` itself: a
-	// successful self-replace doesn't change currentVersion in this already-
-	// running process (it's a compile-time value), so checking again here
-	// would print a confusing "outdated" notice about the binary that was
-	// just replaced.
+	// Shows a non-blocking "devsys is outdated" notice after any command
+	// (devsys CLI Spec, Section 12.5 — modeled on npm's own update-notifier:
+	// a background check on ordinary use, not a separate command you have to
+	// remember to run). Checked live every time — previously throttled to
+	// once per 24h, dropped because a cached "you're up to date" answer
+	// actively works against noticing a version that shipped minutes ago,
+	// which defeats the point of checking at all. Skipped for `update`
+	// itself: a successful self-replace doesn't change currentVersion in
+	// this already-running process (it's a compile-time value), so checking
+	// again here would print a confusing "outdated" notice about the binary
+	// that was just replaced.
 	PersistentPostRun: func(cmd *cobra.Command, args []string) {
 		if cmd.Name() == "update" {
 			return
 		}
-		if !checkThrottled("cli-version") {
-			warnIfCLIOutdated()
-			markChecked("cli-version")
-		}
+		warnIfCLIOutdated()
 	},
 }
 

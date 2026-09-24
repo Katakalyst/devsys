@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/katakalyst/devsys/internal/podmanfake"
@@ -13,9 +16,11 @@ import (
 // Cobra command dispatch (rootCmd.Execute()), not a direct RunE call, since
 // PersistentPostRun only fires through that path — confirming the "check on
 // every command" behavior (devsys CLI Spec, Section 12.5) is actually wired
-// up, not just present as an untriggered closure.
+// up, not just present as an untriggered closure. Checks live every call
+// now (no cache marker to assert on — a cached "up to date" answer would
+// mask a version that shipped minutes ago), so this asserts the warning
+// itself was printed, twice in a row, rather than a throttle marker.
 func TestRootCmd_PersistentPostRun_ChecksCLIVersionOnAnyCommand(t *testing.T) {
-	redirectCacheDir(t)
 	origVersion := currentVersion
 	currentVersion = "1.0.0"
 	t.Cleanup(func() { currentVersion = origVersion })
@@ -30,36 +35,66 @@ func TestRootCmd_PersistentPostRun_ChecksCLIVersionOnAnyCommand(t *testing.T) {
 
 	podmanfake.Install(t, podmanfake.Options{}) // `list` needs podman ps/volume ls to succeed
 
-	if checkThrottled("cli-version") {
-		t.Fatal("test setup: cli-version marker should not already be throttled")
+	runList := func() string {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("os.Pipe: %v", err)
+		}
+		origStderr := os.Stderr
+		os.Stderr = w
+		rootCmd.SetArgs([]string{"list"})
+		execErr := rootCmd.Execute()
+		w.Close()
+		os.Stderr = origStderr
+		if execErr != nil {
+			t.Fatalf("rootCmd.Execute(): %v", execErr)
+		}
+		var buf bytes.Buffer
+		buf.ReadFrom(r)
+		return buf.String()
 	}
 
-	rootCmd.SetArgs([]string{"list"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute(): %v", err)
-	}
-
-	if !checkThrottled("cli-version") {
-		t.Error("expected PersistentPostRun to have run the CLI-version check and marked it, after `devsys list`")
+	for i := 0; i < 2; i++ {
+		out := runList()
+		if !strings.Contains(out, "devsys 2.0.0 is available") {
+			t.Errorf("call %d: expected PersistentPostRun to print the CLI-version warning, got: %q", i+1, out)
+		}
 	}
 }
 
 // TestRootCmd_PersistentPostRun_SkipsUpdateCommand confirms the CLI-version
-// check does not run again immediately after `devsys update` itself, which
-// would otherwise print a confusing "outdated" notice about the binary that
-// command may have just replaced.
+// check does not run for `devsys update` itself, which would otherwise print
+// a confusing "outdated" notice about the binary that command may have just
+// replaced. Calls PersistentPostRun directly with updateCmd rather than
+// executing the real `update` command — there's no cache marker left to
+// inspect afterward (checked live every call now), and running a real
+// update with a non-dev currentVersion would attempt an actual self-replace.
 func TestRootCmd_PersistentPostRun_SkipsUpdateCommand(t *testing.T) {
-	redirectCacheDir(t)
 	origVersion := currentVersion
-	currentVersion = "dev" // dev build: updateCLI() itself is a no-op, safe to actually run
+	currentVersion = "1.0.0"
 	t.Cleanup(func() { currentVersion = origVersion })
 
-	rootCmd.SetArgs([]string{"update"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute(): %v", err)
-	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{"tag_name": "v2.0.0"})
+	}))
+	t.Cleanup(ts.Close)
+	origAPI := releasesAPIURL
+	releasesAPIURL = ts.URL
+	t.Cleanup(func() { releasesAPIURL = origAPI })
 
-	if checkThrottled("cli-version") {
-		t.Error("expected PersistentPostRun to skip the CLI-version check after `devsys update` itself")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = w
+	rootCmd.PersistentPostRun(updateCmd, nil)
+	w.Close()
+	os.Stderr = origStderr
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	if strings.Contains(buf.String(), "is available") {
+		t.Errorf("expected PersistentPostRun to skip the CLI-version check for `devsys update` itself, got: %q", buf.String())
 	}
 }

@@ -311,7 +311,11 @@ func TestWarnIfBaseImageOutdated_Behind_PrintsWarning(t *testing.T) {
 	}
 }
 
-func TestCheckStaleness_Throttled_SkipsSecondCheck(t *testing.T) {
+func TestCheckStaleness_ChecksLiveEveryCall(t *testing.T) {
+	// checkStaleness previously throttled repeat calls to once per 24h via a
+	// cache marker; dropped so a version that shipped minutes ago is never
+	// masked by a cached "you're up to date" answer from earlier the same
+	// day (a cached devsys-base check is exactly what happened this session).
 	redirectCacheDir(t)
 
 	dir := t.TempDir()
@@ -343,16 +347,17 @@ func TestCheckStaleness_Throttled_SkipsSecondCheck(t *testing.T) {
 	}
 
 	checkStaleness("testproject")
-	if registryHits != 1 {
-		t.Errorf("expected the second checkStaleness call to be throttled (no new registry hit), got %d total hits", registryHits)
+	if registryHits != 2 {
+		t.Errorf("expected the second checkStaleness call to check live again (a new registry hit), got %d total hits", registryHits)
 	}
 }
 
 func TestWarnIfCLIOutdated_ThrottledPattern(t *testing.T) {
-	// warnIfCLIOutdated itself is unconditional (throttling is the caller's
-	// job, in cmd/root.go's PersistentPostRun) — this verifies the same
-	// checkThrottled/markChecked composition cmd/root.go uses actually
-	// throttles a second call.
+	// warnIfCLIOutdated itself is unconditional; cmd/root.go no longer wraps
+	// it in checkThrottled/markChecked (dropped so the CLI version notice is
+	// never masked by a cached answer), but checkAgentAuth still uses this
+	// same composition — this verifies the reusable primitive itself still
+	// throttles a second call correctly.
 	redirectCacheDir(t)
 	origVersion := currentVersion
 	currentVersion = "1.0.0"
