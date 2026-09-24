@@ -63,6 +63,9 @@ type Options struct {
 	// ImagePortsHash is the value returned for the devsys.ports-hash label.
 	// Empty string simulates an image built before the label was introduced.
 	ImagePortsHash string
+	// ImageBaseVersion is the value returned for the devsys.base-version label.
+	// Empty string simulates an image built before the label was introduced.
+	ImageBaseVersion string
 	// StartFails makes `podman start` exit non-zero (simulates a failed start).
 	StartFails bool
 	// StopFails makes `podman stop` exit non-zero (simulates a failed stop).
@@ -193,6 +196,7 @@ func Install(t *testing.T, opts Options) *Recorder {
 			fmt.Sprintf("FAKE_IMAGE_PRESENT=%v", opts.ImagePresent),
 			"FAKE_IMAGE_CONTAINERFILE_HASH="+opts.ImageContainerfileHash,
 			"FAKE_IMAGE_PORTS_HASH="+opts.ImagePortsHash,
+			"FAKE_IMAGE_BASE_VERSION="+opts.ImageBaseVersion,
 			fmt.Sprintf("FAKE_CONTAINER_EXISTS=%v", opts.ContainerExists),
 			fmt.Sprintf("FAKE_CONTAINER_RUNNING=%v", opts.ContainerRunning),
 			fmt.Sprintf("FAKE_SECRET_EXISTS=%v", opts.SecretExists),
@@ -275,6 +279,10 @@ func dispatch(args []string) int {
 			}
 			if strings.Contains(joined, "devsys.ports-hash") {
 				fmt.Println(os.Getenv("FAKE_IMAGE_PORTS_HASH"))
+				return 0
+			}
+			if strings.Contains(joined, "devsys.base-version") {
+				fmt.Println(os.Getenv("FAKE_IMAGE_BASE_VERSION"))
 				return 0
 			}
 			fmt.Println("sha256:fakeimageid")

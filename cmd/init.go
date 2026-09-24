@@ -226,6 +226,7 @@ func buildImage(tag, containerfile, contextPath string) error {
 	cfHash := fmt.Sprintf("%x", sha256.Sum256(data))
 	portsHash := portsFileHash(contextPath)
 	_, err = podman.RunPodman("build", "-t", tag,
+		"--pull=newer",
 		"--label", "devsys=true",
 		"--label", "devsys.containerfile-hash="+cfHash,
 		"--label", "devsys.ports-hash="+portsHash,

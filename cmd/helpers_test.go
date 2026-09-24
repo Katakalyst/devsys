@@ -6,7 +6,6 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/katakalyst/devsys/internal/podmanfake"
-	"github.com/katakalyst/devsys/internal/registry"
 )
 
 // ---------------------------------------------------------------------------
@@ -387,50 +385,22 @@ func TestReplaceBinary_DownloadFails_LeavesOriginalInPlace(t *testing.T) {
 // updateProjectBaseImage
 // ---------------------------------------------------------------------------
 
-func TestUpdateProjectBaseImage_RewritesFromLineAndRebuilds(t *testing.T) {
-	dir := t.TempDir()
-	devsysDir := dir + "/.devsys"
-	if err := os.MkdirAll(devsysDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	containerfilePath := devsysDir + "/Containerfile"
-	if err := os.WriteFile(containerfilePath, []byte("FROM example.test/ns/devsys-base:1.0.0\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	registryTS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{"tags": []string{"1.0.0", "2.0.0"}})
-	}))
-	t.Cleanup(registryTS.Close)
-	origClient := registry.HTTPClient
-	registry.HTTPClient = registryTS.Client()
-	t.Cleanup(func() { registry.HTTPClient = origClient })
-	registryHost := registryTS.URL[len("https://"):]
-
-	// Point the Containerfile's FROM line at the fake registry's own host so
-	// updateProjectBaseImage's lookup hits the test server, not example.test.
-	if err := os.WriteFile(containerfilePath, []byte(fmt.Sprintf("FROM %s/ns/devsys-base:1.0.0\n", registryHost)), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+func TestUpdateProjectBaseImage_Rebuilds(t *testing.T) {
+	dir, cfHash, pHash := makeEnterProject(t)
 
 	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists: true,
-		VolumeExists:    true,
-		ProjectPath:     dir,
+		ContainerExists:        true,
+		VolumeExists:           true,
+		ProjectPath:            dir,
+		ImagePresent:           true,
+		ImageContainerfileHash: cfHash,
+		ImagePortsHash:         pHash,
 	})
 
 	if err := updateProjectBaseImage("testproject"); err != nil {
 		t.Fatalf("updateProjectBaseImage: %v", err)
 	}
 
-	got, err := containerfileFromLine(containerfilePath)
-	if err != nil {
-		t.Fatalf("containerfileFromLine: %v", err)
-	}
-	want := registryHost + "/ns/devsys-base:2.0.0"
-	if got != want {
-		t.Errorf("Containerfile FROM line = %q; want %q", got, want)
-	}
 	if !rec.HasCall("build", "devsys-testproject") {
 		t.Error("expected updateProjectBaseImage to rebuild the project")
 	}

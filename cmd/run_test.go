@@ -10,7 +10,6 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -236,11 +235,6 @@ func TestWarnIfCLIOutdated_Behind_PrintsWarning(t *testing.T) {
 }
 
 func TestWarnIfBaseImageOutdated_Behind_PrintsWarning(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(dir+"/.devsys", 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-
 	registryTS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{"tags": []string{"1.0.0", "2.0.0"}})
 	}))
@@ -250,14 +244,13 @@ func TestWarnIfBaseImageOutdated_Behind_PrintsWarning(t *testing.T) {
 	t.Cleanup(func() { registry.HTTPClient = origClient })
 	registryHost := registryTS.URL[len("https://"):]
 
-	containerfilePath := dir + "/.devsys/Containerfile"
-	if err := os.WriteFile(containerfilePath, []byte(fmt.Sprintf("FROM %s/ns/devsys-base:1.0.0\n", registryHost)), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	origBase := devsysBaseImage
+	devsysBaseImage = registryHost + "/ns/devsys-base"
+	t.Cleanup(func() { devsysBaseImage = origBase })
 
 	podmanfake.Install(t, podmanfake.Options{
-		ContainerExists: true,
-		ProjectPath:     dir,
+		ImagePresent:     true,
+		ImageBaseVersion: "1.0.0",
 	})
 
 	r, w, _ := os.Pipe()
@@ -277,14 +270,8 @@ func TestWarnIfBaseImageOutdated_Behind_PrintsWarning(t *testing.T) {
 func TestCheckStaleness_ChecksLiveEveryCall(t *testing.T) {
 	// checkStaleness previously throttled repeat calls to once per 24h via a
 	// cache marker; dropped so a version that shipped minutes ago is never
-	// masked by a cached "you're up to date" answer from earlier the same
-	// day (a cached devsys-base check is exactly what happened this session).
+	// masked by a cached "you're up to date" answer from earlier the same day.
 	redirectCacheDir(t)
-
-	dir := t.TempDir()
-	if err := os.MkdirAll(dir+"/.devsys", 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
 
 	var registryHits int
 	registryTS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -297,12 +284,11 @@ func TestCheckStaleness_ChecksLiveEveryCall(t *testing.T) {
 	t.Cleanup(func() { registry.HTTPClient = origClient })
 	registryHost := registryTS.URL[len("https://"):]
 
-	containerfilePath := dir + "/.devsys/Containerfile"
-	if err := os.WriteFile(containerfilePath, []byte(fmt.Sprintf("FROM %s/ns/devsys-base:1.0.0\n", registryHost)), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	origBase := devsysBaseImage
+	devsysBaseImage = registryHost + "/ns/devsys-base"
+	t.Cleanup(func() { devsysBaseImage = origBase })
 
-	podmanfake.Install(t, podmanfake.Options{ContainerExists: true, ProjectPath: dir})
+	podmanfake.Install(t, podmanfake.Options{ImagePresent: true, ImageBaseVersion: "1.0.0"})
 
 	checkStaleness("testproject")
 	if registryHits != 1 {

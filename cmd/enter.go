@@ -172,27 +172,22 @@ func warnIfCLIOutdated() {
 	fmt.Fprintf(os.Stderr, "Warning: devsys %s is available (you have %s). Run 'devsys update' to upgrade.\n", latest, currentVersion)
 }
 
-// warnIfBaseImageOutdated prints a warning if this project's devsys-base
-// version is behind the newest available at its own recorded location.
-// Silently skipped on any failure — same courtesy-notice reasoning as
-// warnIfCLIOutdated.
+// warnIfBaseImageOutdated prints a warning if this project's built image is
+// behind the newest published devsys-base. Reads the devsys.base-version
+// label baked into the project image at build time and compares it against
+// the latest semver tag on GHCR. Silently skipped on any failure.
 func warnIfBaseImageOutdated(projectName string) {
-	containerName := fmt.Sprintf("devsys-%s", projectName)
-	projectPath, err := getProjectPath(containerName)
-	if err != nil {
+	imageTag := fmt.Sprintf("devsys-%s", projectName)
+	current, err := podman.GetImageLabel(imageTag, "devsys.base-version")
+	if err != nil || current == "" || current == "dev" {
 		return
 	}
-	containerfilePath := filepath.Join(projectPath, ".devsys", "Containerfile")
-	currentRef, err := containerfileFromLine(containerfilePath)
-	if err != nil {
+	latest, err := registry.LatestTag(devsysBaseImage)
+	if err != nil || latest == current {
 		return
 	}
-	newest, err := registry.LatestReference(locationFromReference(currentRef))
-	if err != nil || newest == currentRef {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "Warning: a newer devsys-base is available for '%s' (%s). Run 'devsys update %s' to upgrade.\n",
-		projectName, newest, projectName)
+	fmt.Fprintf(os.Stderr, "Warning: a newer devsys-base is available for '%s' (%s → %s). Run 'devsys rebuild %s' to upgrade.\n",
+		projectName, current, latest, projectName)
 }
 
 // checkTokenExpiry warns about any expiring GitLab token for the project —
