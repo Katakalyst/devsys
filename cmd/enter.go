@@ -28,22 +28,27 @@ func runEnter(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("container %s does not exist — run 'devsys init' first", containerName)
 	}
 
-	// Block if the project's own .devsys/Containerfile has been edited since
-	// the image was built — the running container would be inconsistent with
-	// the declared stack.
-	if err := checkContainerfileStale(projectName); err != nil {
-		return err
-	}
-
-	// Block if .devsys/ports has changed since the image was built — port
-	// mappings are baked into the container at creation time and cannot be
-	// changed without a rebuild.
-	if err := checkPortsStale(projectName); err != nil {
-		return err
-	}
-
-	// Ensure container is running.
+	// Ensure container is running. The staleness checks only matter here,
+	// right before (re)starting it from the image — that's the only point a
+	// stale image would actually get used. If the container is already
+	// running, it was already started from whatever image was current at the
+	// time; a second `devsys enter` just attaches another shell to that same
+	// running instance via `podman exec` and doesn't touch the image at all,
+	// so blocking it on a since-changed .devsys/Containerfile or ports file
+	// achieves nothing except stopping the user from getting in. The
+	// container still needs `devsys rebuild` to actually pick up the change
+	// — this only stops enter from refusing entry to a container that isn't
+	// going to be (re)started anyway.
 	if !podman.ContainerIsRunning(containerName) {
+		// Block starting the container from a stale image — the .devsys/Containerfile
+		// or .devsys/ports the container would come up with wouldn't match what's
+		// declared on disk.
+		if err := checkContainerfileStale(projectName); err != nil {
+			return err
+		}
+		if err := checkPortsStale(projectName); err != nil {
+			return err
+		}
 		if _, err := podman.RunPodman("start", containerName); err != nil {
 			return fmt.Errorf("cannot start container: %w", err)
 		}

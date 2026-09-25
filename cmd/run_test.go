@@ -123,6 +123,54 @@ func TestRunEnter_ContainerStopped_StartsBeforeEntering(t *testing.T) {
 	}
 }
 
+func TestRunEnter_ContainerRunning_StaleContainerfile_StillEnters(t *testing.T) {
+	// The container is already running, so a Containerfile/ports change since
+	// the image was built must not block entry — only (re)starting the
+	// container from that stale image should be blocked, and nothing here
+	// starts it.
+	projectPath, _, _ := makeEnterProject(t)
+	rec := podmanfake.Install(t, podmanfake.Options{
+		ContainerExists:        true,
+		ContainerRunning:       true,
+		SecretExists:           false,
+		ProjectPath:            projectPath,
+		ImagePresent:           true,
+		ImageContainerfileHash: "some-stale-hash-that-does-not-match",
+		ImagePortsHash:         "some-stale-hash-that-does-not-match",
+	})
+	skipStalenessChecks(t, "testproject")
+
+	err := runEnter(nil, []string{"testproject"})
+	if err != nil {
+		t.Fatalf("runEnter: %v", err)
+	}
+	if !rec.HasCall("exec", "devsys-testproject", "bash") {
+		t.Error("expected podman exec ... bash even with a stale Containerfile/ports hash, since the container is already running")
+	}
+	if rec.HasCall("start", "devsys-testproject") {
+		t.Error("did not expect podman start — container was already running")
+	}
+}
+
+func TestRunEnter_ContainerStopped_StaleContainerfile_Blocks(t *testing.T) {
+	// The container needs to be started from the image — this is the one
+	// case a stale Containerfile must still block entry.
+	projectPath, _, pHash := makeEnterProject(t)
+	podmanfake.Install(t, podmanfake.Options{
+		ContainerExists:        true,
+		ContainerRunning:       false,
+		ProjectPath:            projectPath,
+		ImagePresent:           true,
+		ImageContainerfileHash: "some-stale-hash-that-does-not-match",
+		ImagePortsHash:         pHash,
+	})
+
+	err := runEnter(nil, []string{"testproject"})
+	if err == nil {
+		t.Fatal("expected error: container is stopped and would start from a stale image")
+	}
+}
+
 func TestRunEnter_TokenExpiringSoon_WarnsAndStillEnters(t *testing.T) {
 	// Token expires in 10 days — within the 30-day warning window.
 	soon := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
