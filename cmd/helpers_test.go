@@ -12,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/katakalyst/devsys/internal/podmanfake"
 )
 
 // ---------------------------------------------------------------------------
@@ -381,27 +379,3 @@ func TestReplaceBinary_DownloadFails_LeavesOriginalInPlace(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// updateProjectBaseImage
-// ---------------------------------------------------------------------------
-
-func TestUpdateProjectBaseImage_Rebuilds(t *testing.T) {
-	dir, cfHash, pHash := makeEnterProject(t)
-
-	rec := podmanfake.Install(t, podmanfake.Options{
-		ContainerExists:        true,
-		VolumeExists:           true,
-		ProjectPath:            dir,
-		ImagePresent:           true,
-		ImageContainerfileHash: cfHash,
-		ImagePortsHash:         pHash,
-	})
-
-	if err := updateProjectBaseImage("testproject"); err != nil {
-		t.Fatalf("updateProjectBaseImage: %v", err)
-	}
-
-	if !rec.HasCall("build", "devsys-testproject") {
-		t.Error("expected updateProjectBaseImage to rebuild the project")
-	}
-}

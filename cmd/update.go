@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katakalyst/devsys/internal/podman"
 	"github.com/spf13/cobra"
 )
 
@@ -39,28 +38,23 @@ var releasesAPIURL = "https://api.github.com/repos/" + releaseRepo + "/releases/
 // local httptest server instead of github.com.
 var releaseDownloadBaseURL = "https://github.com/" + releaseRepo + "/releases/latest/download"
 
-var updateAll bool
-
+// updateCmd updates devsys itself in place. It no longer takes a project
+// argument or --all — devsys CLI Spec §12.2/12.4, corrected: a per-project
+// "bump the pinned devsys-base version" command doesn't have a role to play
+// now that devsys init writes a floating FROM ghcr.io/.../devsys-base:latest
+// by default (Section 12.4's :latest correction) and buildImage's
+// --pull=newer already fetches whatever's newest on every `devsys rebuild`.
+// The live `devsys enter` staleness warning (warnIfBaseImageOutdated,
+// cmd/enter.go) tells the user when they're behind, independent of what the
+// Containerfile's FROM line says either way — nothing was actually lost by
+// removing this.
 var updateCmd = &cobra.Command{
-	Use:   "update [project]",
-	Short: "Update devsys itself, or a project's devsys-base version",
-	Long: `With no argument: updates devsys itself in place.
-With a project name (or --all): updates that project's (or every project's)
-devsys-base version. These are two entirely separate behaviors — never both
-at once (devsys CLI Spec, Section 12.2).`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runUpdate,
-}
-
-func init() {
-	updateCmd.Flags().BoolVar(&updateAll, "all", false, "Update every project's devsys-base version")
-}
-
-func runUpdate(cmd *cobra.Command, args []string) error {
-	if len(args) == 0 && !updateAll {
+	Use:   "update",
+	Short: "Update devsys itself in place",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		return updateCLI()
-	}
-	return updateBaseImages(args, updateAll)
+	},
 }
 
 // ---------------------------------------------------------------------------
@@ -241,40 +235,3 @@ func downloadFile(url, destPath string) error {
 	return err
 }
 
-// ---------------------------------------------------------------------------
-// Base image updates (devsys CLI Spec, Section 12.2/12.4 — project argument
-// or --all)
-// ---------------------------------------------------------------------------
-
-func updateBaseImages(args []string, all bool) error {
-	var projectNames []string
-	if all {
-		containers, err := podman.ListDevsysContainers()
-		if err != nil {
-			return fmt.Errorf("cannot list containers: %w", err)
-		}
-		for _, c := range containers {
-			name := containerField(c, "Names")
-			projectNames = append(projectNames, containerToProject(name))
-		}
-		if len(projectNames) == 0 {
-			fmt.Println("No devsys project containers found.")
-			return nil
-		}
-	} else {
-		projectNames = []string{args[0]}
-	}
-
-	for _, name := range projectNames {
-		if err := updateProjectBaseImage(name); err != nil {
-			fmt.Fprintf(os.Stderr, "  Error updating %s: %v\n", name, err)
-		}
-	}
-	return nil
-}
-
-// updateProjectBaseImage rebuilds the project, which auto-updates the FROM
-// line to the latest published base version as part of the rebuild step.
-func updateProjectBaseImage(projectName string) error {
-	return rebuildProject(projectName)
-}

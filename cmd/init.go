@@ -10,7 +10,6 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/katakalyst/devsys/internal/podman"
-	"github.com/katakalyst/devsys/internal/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -50,18 +49,19 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Step 5: Generate .devsys/Containerfile if absent, pinned to the
-	// current newest devsys-base version (devsys CLI Spec, Section 12.4) —
-	// never a floating tag.
+	// Step 5: Generate .devsys/Containerfile if absent, tracking
+	// devsys-base:latest — a floating tag, not a pinned version. buildImage's
+	// --pull=newer re-pulls it whenever the registry has something newer, so
+	// a project picks up new base releases automatically on its next
+	// rebuild, with no Containerfile commit needed (devsys CLI Spec, Section
+	// 12.4, corrected: this used to pin to the current newest version and
+	// explicitly never float).
 	containerfilePath := filepath.Join(projectPath, ".devsys", "Containerfile")
 	if _, err := os.Stat(containerfilePath); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(containerfilePath), 0o755); err != nil {
 			return fmt.Errorf("cannot create .devsys directory: %w", err)
 		}
-		baseRef, err := registry.LatestReference(devsysBaseImage)
-		if err != nil {
-			return fmt.Errorf("cannot look up newest devsys-base version: %w", err)
-		}
+		baseRef := devsysBaseImage + ":latest"
 		containerfileContent := fmt.Sprintf("FROM %s\n", baseRef)
 		if err := os.WriteFile(containerfilePath, []byte(containerfileContent), 0o644); err != nil {
 			return fmt.Errorf("cannot write Containerfile: %w", err)
