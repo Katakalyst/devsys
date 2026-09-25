@@ -207,10 +207,13 @@ func TestCreateProjectContainerWithRepoSecrets_MountsPerProjectAgentVolumes(t *t
 		t.Fatalf("createProjectContainerWithRepoSecrets: %v", err)
 	}
 
-	for _, vol := range []string{"devsys-foo-claude-auth", "devsys-foo-codex-auth", "devsys-foo-trivy-db", "devsys-foo-cache"} {
+	for _, vol := range []string{"devsys-foo-claude-auth", "devsys-foo-codex-auth", "devsys-foo-cache"} {
 		if !rec.HasCall("volume", "create", vol) {
 			t.Errorf("expected podman volume create for %s; calls: %v", vol, rec.Calls())
 		}
+	}
+	if rec.HasCall("volume", "create", "devsys-foo-trivy-db") {
+		t.Error("must not create a separate trivy-db volume — Trivy's cache now lives under the merged cache volume")
 	}
 	if !rec.HasCall("create", "--volume", "devsys-foo-claude-auth:/root/.claude") {
 		t.Error("expected container create to mount devsys-foo-claude-auth at /root/.claude")
@@ -218,13 +221,43 @@ func TestCreateProjectContainerWithRepoSecrets_MountsPerProjectAgentVolumes(t *t
 	if !rec.HasCall("create", "--volume", "devsys-foo-codex-auth:/root/.codex") {
 		t.Error("expected container create to mount devsys-foo-codex-auth at /root/.codex")
 	}
-	if !rec.HasCall("create", "--volume", "devsys-foo-cache:/root/cache") {
-		t.Error("expected container create to mount devsys-foo-cache at /root/cache")
+	if !rec.HasCall("create", "--volume", "devsys-foo-cache:/root/.cache") {
+		t.Error("expected container create to mount devsys-foo-cache at /root/.cache")
 	}
 	// A second project must get its own, distinctly-named volumes — never
 	// the shared machine-wide names this replaces.
 	if rec.HasCall("volume", "create", "devsys-claude-auth") || rec.HasCall("volume", "create", "devsys-codex-auth") {
 		t.Error("must not create the old machine-wide devsys-claude-auth/devsys-codex-auth volumes")
+	}
+}
+
+func TestMigrateLegacyCacheVolumes_CopiesTrivyDataWhenLegacyVolumeExists(t *testing.T) {
+	rec := podmanfake.Install(t, podmanfake.Options{VolumeExists: true, ImagePresent: true})
+
+	if err := migrateLegacyCacheVolumes("devsys-foo", "foo", "devsys-foo-cache"); err != nil {
+		t.Fatalf("migrateLegacyCacheVolumes: %v", err)
+	}
+
+	if !rec.HasCall("run", "--rm", "devsys-foo-trivy-db:/old-trivy:ro") {
+		t.Errorf("expected the legacy trivy-db volume to be mounted read-only for copying; calls: %v", rec.Calls())
+	}
+	if !rec.HasCall("run", "--rm", "devsys-foo-cache:/new") {
+		t.Errorf("expected the merged cache volume to be mounted for copying; calls: %v", rec.Calls())
+	}
+	if !rec.HasCall("cp -a /old-trivy/. /new/trivy/") {
+		t.Errorf("expected the trivy data to be copied into the cache volume's trivy/ subdirectory; calls: %v", rec.Calls())
+	}
+}
+
+func TestMigrateLegacyCacheVolumes_NoOpWhenNoLegacyVolume(t *testing.T) {
+	rec := podmanfake.Install(t, podmanfake.Options{VolumeExists: false, ImagePresent: true})
+
+	if err := migrateLegacyCacheVolumes("devsys-foo", "foo", "devsys-foo-cache"); err != nil {
+		t.Fatalf("migrateLegacyCacheVolumes: %v", err)
+	}
+
+	if rec.HasCall("old-trivy") {
+		t.Errorf("expected no migration attempt when the legacy trivy-db volume does not exist; calls: %v", rec.Calls())
 	}
 }
 

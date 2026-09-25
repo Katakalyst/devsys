@@ -734,15 +734,21 @@ func recreateContainerForAuth(projectName string, interactive bool) error {
 func createProjectContainerWithRepoSecrets(containerName, projectName, projectPath, imageTag string) error {
 	claudeVolume := agentAuthVolumeName(projectName, "claude")
 	codexVolume := agentAuthVolumeName(projectName, "codex")
-	trivyVolume := fmt.Sprintf("devsys-%s-trivy-db", projectName)
 	cacheVolume := fmt.Sprintf("devsys-%s-cache", projectName)
 
-	for _, vol := range []string{claudeVolume, codexVolume, trivyVolume, cacheVolume} {
+	for _, vol := range []string{claudeVolume, codexVolume, cacheVolume} {
 		if !podman.VolumeExists(vol) {
 			if _, err := podman.RunPodman("volume", "create", "--label", "devsys=true", vol); err != nil {
 				return fmt.Errorf("cannot create volume %s: %w", vol, err)
 			}
 		}
+	}
+
+	// One-time merge of a pre-existing project's separate trivy-db volume
+	// into cacheVolume, now that both live under the single /root/.cache
+	// mount. No-op for a project that never had a trivy-db volume.
+	if err := migrateLegacyCacheVolumes(imageTag, projectName, cacheVolume); err != nil {
+		return err
 	}
 
 	// Seed settings (non-destructively) from host on first creation.
@@ -759,12 +765,11 @@ func createProjectContainerWithRepoSecrets(containerName, projectName, projectPa
 		"--volume", projectPath + ":" + defaultWorkspaceDest + ":Z",
 		"--volume", claudeVolume + ":/root/.claude",
 		"--volume", codexVolume + ":/root/.codex",
-		"--volume", trivyVolume + ":/root/.cache/trivy",
-		"--volume", cacheVolume + ":/root/cache",
+		"--volume", cacheVolume + ":/root/.cache",
 		"--env", "CLAUDE_CONFIG_DIR=/root/.claude",
 		"--env", "CODEX_HOME=/root/.codex",
 		"--env", "TRIVY_CACHE_DIR=/root/.cache/trivy",
-		"--env", "DEVSYS_CACHE=/root/cache",
+		"--env", "DEVSYS_CACHE=/root/.cache",
 		"--env", "IS_SANDBOX=1",
 	}
 
@@ -817,6 +822,50 @@ func seedAgentSettings(volumeName, hostSettingsFile, imageTag string) {
 		imageTag,
 		"-c", "cp /src/settings.json /data/settings.json",
 	)
+}
+
+// migrateLegacyCacheVolumes copies data from a pre-existing project's
+// separate devsys-<project>-trivy-db volume (formerly mounted at
+// /root/.cache/trivy on its own) into cacheVolume's trivy/ subdirectory, now
+// that Trivy's cache lives under the single merged /root/.cache mount
+// alongside pip/npm/go/etc. Idempotent and cheap to call unconditionally:
+// no-ops immediately if the project never had a trivy-db volume (true for
+// every project created after this merge), and again if cacheVolume/trivy
+// already has content from a previous run. The old trivy-db volume is left
+// in place rather than deleted — same reasoning as every other volume
+// rework here, it becomes orphaned and is cleaned up whenever the user next
+// runs `devsys rm`/`uninstall`, not forcibly removed as a side effect of
+// entering the container.
+func migrateLegacyCacheVolumes(imageTag, projectName, cacheVolume string) error {
+	trivyVolume := fmt.Sprintf("devsys-%s-trivy-db", projectName)
+	if !podman.VolumeExists(trivyVolume) {
+		return nil
+	}
+
+	out, err := podman.RunPodman(
+		"run", "--rm",
+		"--volume", cacheVolume+":/new:ro",
+		"--entrypoint", "sh",
+		imageTag,
+		"-c", "ls -A /new/trivy 2>/dev/null",
+	)
+	if err == nil && strings.TrimSpace(out) != "" {
+		return nil // already migrated
+	}
+
+	fmt.Printf("Merging legacy Trivy cache volume %s into %s (one-time) ...\n", trivyVolume, cacheVolume)
+	if err := podman.RunPodmanLive(
+		"run", "--rm",
+		"--volume", trivyVolume+":/old-trivy:ro",
+		"--volume", cacheVolume+":/new",
+		"--entrypoint", "sh",
+		imageTag,
+		"-c", "mkdir -p /new/trivy && cp -a /old-trivy/. /new/trivy/",
+	); err != nil {
+		return fmt.Errorf("cannot migrate legacy trivy cache volume %s: %w", trivyVolume, err)
+	}
+	fmt.Printf("  Migrated. %s is no longer used — remove it with 'devsys rm %s' (or manually) whenever you're ready.\n", trivyVolume, projectName)
+	return nil
 }
 
 // projectRepoSecretNames derives the exact per-repo credential secret names
